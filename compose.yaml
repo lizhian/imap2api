@@ -1,0 +1,16 @@
+services:
+  imap2api:
+    build: .
+    image: imap2api:local
+    restart: unless-stopped
+    environment:
+      IMAP2API_TOKEN: ${IMAP2API_TOKEN:?IMAP2API_TOKEN must be at least 32 characters}
+      SYNC_INTERVAL_SECONDS: ${SYNC_INTERVAL_SECONDS:-300}
+      PORT: 3000
+    ports:
+      - "${IMAP2API_PORT:-3000}:3000"
+    volumes:
+      - imap2api-data:/data
+
+volumes:
+  imap2api-data:

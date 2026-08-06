@@ -1,0 +1,24 @@
+{
+  "name": "imap2api",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "npm run build -w @imap2api/shared && npm run build -w @imap2api/web && npm run build -w @imap2api/server",
+    "dev": "concurrently -n server,web -c blue,green \"npm run dev -w @imap2api/server\" \"npm run dev -w @imap2api/web\"",
+    "test": "npm run test -w @imap2api/server && npm run test -w @imap2api/web",
+    "typecheck": "npm run typecheck -w @imap2api/shared && npm run typecheck -w @imap2api/server && npm run typecheck -w @imap2api/web",
+    "start": "npm run start -w @imap2api/server"
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.1",
+    "typescript": "^5.9.3"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

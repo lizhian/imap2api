@@ -1,0 +1,31 @@
+{
+  "name": "@imap2api/server",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsx watch src/index.ts",
+    "start": "node dist/index.js",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@fastify/static": "^10.1.3",
+    "@imap2api/shared": "0.1.0",
+    "better-sqlite3": "^12.4.1",
+    "fastify": "^5.6.2",
+    "imapflow": "^1.0.195",
+    "mailparser": "^3.9.0",
+    "sanitize-html": "^2.17.0",
+    "zod": "^4.1.12"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/mailparser": "^3.4.6",
+    "@types/node": "^24.10.0",
+    "@types/sanitize-html": "^2.16.0",
+    "tsx": "^4.20.6",
+    "vitest": "^4.0.8"
+  }
+}

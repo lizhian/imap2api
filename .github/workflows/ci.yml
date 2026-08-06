@@ -1,0 +1,14 @@
+name: Pull request checks
+
+on:
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    uses: ./.github/workflows/_quality.yml
