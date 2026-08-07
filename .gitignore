@@ -151,3 +151,5 @@ data/
 playwright-report/
 test-results/
 apps/web/screenshots/
+
+.idea
