@@ -12,10 +12,12 @@ import type {
   MessageListResponse,
   MessageSummary,
   MessageView,
-  Settings
+  Settings,
+  SyncMode
 } from "@imap2api/shared";
 import { CryptoService } from "./crypto.js";
 import { resolveImapConfig, type ResolvedImapConfig } from "./providers.js";
+import { InputError } from "./errors.js";
 
 interface AccountConfigPayload {
   email: string;
@@ -26,6 +28,7 @@ export interface StoredAccount extends AccountConfigPayload {
   id: string;
   password: string;
   status: ConnectionStatus;
+  syncMode: SyncMode | null;
   lastSyncedAt: string | null;
   lastError: string | null;
 }
@@ -58,6 +61,7 @@ interface AccountRow {
   config_enc: Buffer;
   credential_enc: Buffer;
   status: ConnectionStatus;
+  sync_mode: SyncMode | null;
   last_sync_at: string | null;
   error_enc: Buffer | null;
   created_at: string;
@@ -84,7 +88,8 @@ CREATE TABLE IF NOT EXISTS meta (
 );
 CREATE TABLE IF NOT EXISTS settings (
   id INTEGER PRIMARY KEY CHECK (id = 1),
-  max_messages_per_account INTEGER NOT NULL DEFAULT 100 CHECK (max_messages_per_account BETWEEN 1 AND 10000)
+  max_messages_per_account INTEGER NOT NULL DEFAULT 100 CHECK (max_messages_per_account BETWEEN 1 AND 10000),
+  poll_interval_seconds INTEGER NOT NULL DEFAULT 10 CHECK (poll_interval_seconds BETWEEN 5 AND 3600)
 );
 CREATE TABLE IF NOT EXISTS accounts (
   id TEXT PRIMARY KEY,
@@ -92,6 +97,7 @@ CREATE TABLE IF NOT EXISTS accounts (
   config_enc BLOB NOT NULL,
   credential_enc BLOB NOT NULL,
   status TEXT NOT NULL DEFAULT 'pending',
+  sync_mode TEXT CHECK (sync_mode IS NULL OR sync_mode IN ('idle', 'polling')),
   last_sync_at TEXT,
   error_enc BLOB,
   created_at TEXT NOT NULL,
@@ -123,8 +129,6 @@ CREATE TABLE IF NOT EXISTS messages (
 CREATE INDEX IF NOT EXISTS messages_list_idx ON messages(display_time DESC, id DESC);
 CREATE INDEX IF NOT EXISTS messages_account_idx ON messages(account_id, display_time DESC, id DESC);
 CREATE INDEX IF NOT EXISTS messages_view_idx ON messages(folder_kind, is_read, display_time DESC);
-INSERT OR IGNORE INTO settings(id, max_messages_per_account) VALUES (1, 100);
-PRAGMA user_version = 1;
 `;
 
 function asBuffer(value: Buffer | Uint8Array): Buffer {
@@ -135,7 +139,7 @@ export class AppDatabase {
   readonly raw: Database.Database;
   readonly crypto: CryptoService;
 
-  constructor(path: string, token: string) {
+  constructor(path: string, token: string, initialPollIntervalSeconds = 10) {
     mkdirSync(dirname(path), { recursive: true });
     this.raw = new Database(path);
     this.raw.pragma("journal_mode = WAL");
@@ -159,6 +163,9 @@ export class AppDatabase {
       this.raw.prepare("INSERT INTO meta(key, value) VALUES ('key_check', ?)").run(this.crypto.encrypt("imap2api-key-check-v1"));
     }
     this.raw.exec(SCHEMA);
+    this.migrate();
+    this.raw.prepare("INSERT OR IGNORE INTO settings(id, max_messages_per_account, poll_interval_seconds) VALUES (1, 100, ?)")
+      .run(initialPollIntervalSeconds);
   }
 
   close(): void {
@@ -166,14 +173,29 @@ export class AppDatabase {
   }
 
   getSettings(): Settings {
-    const row = this.raw.prepare("SELECT max_messages_per_account AS maxMessagesPerAccount FROM settings WHERE id = 1").get() as Settings;
+    const row = this.raw.prepare(`SELECT max_messages_per_account AS maxMessagesPerAccount,
+      poll_interval_seconds AS pollIntervalSeconds FROM settings WHERE id = 1`).get() as Settings;
     return row;
   }
 
-  updateSettings(maxMessagesPerAccount: number): Settings {
-    this.raw.prepare("UPDATE settings SET max_messages_per_account = ? WHERE id = 1").run(maxMessagesPerAccount);
-    for (const { id } of this.raw.prepare("SELECT id FROM accounts").all() as Array<{ id: string }>) this.enforceRetention(id);
-    return this.getSettings();
+  updateSettings(input: Partial<Settings>): { settings: Settings; deleted: Array<{ accountId: string; folder: "inbox" | "junk"; ids: string[] }> } {
+    return this.raw.transaction(() => {
+      const current = this.getSettings();
+      const next = { ...current, ...input };
+      this.raw.prepare("UPDATE settings SET max_messages_per_account = ?, poll_interval_seconds = ? WHERE id = 1")
+        .run(next.maxMessagesPerAccount, next.pollIntervalSeconds);
+      const deleted: Array<{ accountId: string; folder: "inbox" | "junk"; ids: string[] }> = [];
+      if (next.maxMessagesPerAccount !== current.maxMessagesPerAccount) {
+        for (const { id } of this.raw.prepare("SELECT id FROM accounts").all() as Array<{ id: string }>) {
+          for (const removed of this.enforceRetention(id)) {
+            const group = deleted.find((item) => item.accountId === id && item.folder === removed.folder);
+            if (group) group.ids.push(removed.id);
+            else deleted.push({ accountId: id, folder: removed.folder, ids: [removed.id] });
+          }
+        }
+      }
+      return { settings: this.getSettings(), deleted };
+    })();
   }
 
   listAccounts(): Account[] {
@@ -189,6 +211,7 @@ export class AppDatabase {
       ...config,
       password: this.crypto.decrypt<string>(asBuffer(row.credential_enc)),
       status: row.status,
+      syncMode: row.sync_mode,
       lastSyncedAt: row.last_sync_at,
       lastError: row.error_enc ? this.crypto.decrypt<string>(asBuffer(row.error_enc)) : null
     };
@@ -215,7 +238,7 @@ export class AppDatabase {
     const credential = input.password ? this.crypto.encrypt(input.password) : this.crypto.encrypt(current.password);
     this.raw.prepare(`
       UPDATE accounts SET email_hash = ?, config_enc = ?, credential_enc = ?, status = 'pending',
-        error_enc = NULL, updated_at = ? WHERE id = ?
+        sync_mode = NULL, error_enc = NULL, updated_at = ? WHERE id = ?
     `).run(this.crypto.fingerprint(email), this.crypto.encrypt({ email, imap }), credential, now, id);
     return this.toPublicAccount(this.raw.prepare("SELECT * FROM accounts WHERE id = ?").get(id) as AccountRow);
   }
@@ -232,6 +255,11 @@ export class AppDatabase {
     `).run(status, error ? this.crypto.encrypt(error.slice(0, 1000)) : null, synced ? 1 : 0, now, now, id);
   }
 
+  setAccountSyncMode(id: string, syncMode: SyncMode | null): void {
+    this.raw.prepare("UPDATE accounts SET sync_mode = ?, updated_at = ? WHERE id = ?")
+      .run(syncMode, new Date().toISOString(), id);
+  }
+
   getFolderState(accountId: string, kind: "inbox" | "junk"): { path: string; uidValidity: string } | null {
     const row = this.raw.prepare("SELECT path_enc, uid_validity FROM folders WHERE account_id = ? AND kind = ?").get(accountId, kind) as { path_enc: Buffer; uid_validity: string } | undefined;
     return row ? { path: this.crypto.decrypt<string>(asBuffer(row.path_enc)), uidValidity: row.uid_validity } : null;
@@ -245,8 +273,10 @@ export class AppDatabase {
     `).run(accountId, kind, this.crypto.encrypt(path), uidValidity, new Date().toISOString());
   }
 
-  resetFolder(accountId: string, kind: "inbox" | "junk"): void {
+  resetFolder(accountId: string, kind: "inbox" | "junk"): string[] {
+    const ids = (this.raw.prepare("SELECT id FROM messages WHERE account_id = ? AND folder_kind = ?").all(accountId, kind) as Array<{ id: string }>).map((row) => row.id);
     this.raw.prepare("DELETE FROM messages WHERE account_id = ? AND folder_kind = ?").run(accountId, kind);
+    return ids;
   }
 
   getKnownMessage(accountId: string, kind: "inbox" | "junk", uidValidity: string, uid: number): { id: string; read: boolean } | null {
@@ -259,8 +289,26 @@ export class AppDatabase {
     this.raw.prepare("UPDATE messages SET is_read = ?, updated_at = ? WHERE id = ?").run(read ? 1 : 0, new Date().toISOString(), id);
   }
 
-  upsertMessage(message: SyncedMessage): void {
+  hasMessage(id: string): boolean {
+    return Boolean(this.raw.prepare("SELECT 1 FROM messages WHERE id = ?").get(id));
+  }
+
+  isInRetentionWindow(accountId: string, displayTime: string, folder: "inbox" | "junk", uid: number): boolean {
+    const max = this.getSettings().maxMessagesPerAccount;
+    const count = (this.raw.prepare("SELECT COUNT(*) AS count FROM messages WHERE account_id = ?").get(accountId) as { count: number }).count;
+    if (count < max) return true;
+    const cutoff = this.raw.prepare(`SELECT display_time AS displayTime, folder_kind AS folder, uid
+      FROM messages WHERE account_id = ?
+      ORDER BY display_time DESC, folder_kind ASC, uid DESC LIMIT 1 OFFSET ?`)
+      .get(accountId, max - 1) as { displayTime: string; folder: "inbox" | "junk"; uid: number } | undefined;
+    if (!cutoff || displayTime !== cutoff.displayTime) return !cutoff || displayTime > cutoff.displayTime;
+    if (folder !== cutoff.folder) return folder < cutoff.folder;
+    return uid > cutoff.uid;
+  }
+
+  upsertMessage(message: SyncedMessage): string {
     const now = new Date().toISOString();
+    const id = message.id ?? randomUUID();
     this.raw.prepare(`
       INSERT INTO messages(id, account_id, folder_kind, mailbox_path_enc, uid, uid_validity, is_read,
         display_time, has_attachments, content_enc, created_at, updated_at)
@@ -269,27 +317,36 @@ export class AppDatabase {
         is_read = excluded.is_read, display_time = excluded.display_time,
         has_attachments = excluded.has_attachments, content_enc = excluded.content_enc, updated_at = excluded.updated_at
     `).run(
-      message.id ?? randomUUID(), message.accountId, message.folder, this.crypto.encrypt(message.mailboxPath),
+      id, message.accountId, message.folder, this.crypto.encrypt(message.mailboxPath),
       message.uid, message.uidValidity, message.read ? 1 : 0, message.displayTime,
       message.content.attachments.length ? 1 : 0, this.crypto.encrypt(message.content), now, now
     );
+    return id;
   }
 
-  removeMissingFolderMessages(accountId: string, kind: "inbox" | "junk", uidValidity: string, retainedUids: number[]): void {
+  removeMissingFolderMessages(accountId: string, kind: "inbox" | "junk", uidValidity: string, retainedUids: number[]): string[] {
+    const suffix = retainedUids.length ? `AND (uid_validity != ? OR uid NOT IN (${retainedUids.map(() => "?").join(",")}))` : "";
+    const params: unknown[] = retainedUids.length ? [accountId, kind, uidValidity, ...retainedUids] : [accountId, kind];
+    const ids = (this.raw.prepare(`SELECT id FROM messages WHERE account_id = ? AND folder_kind = ? ${suffix}`).all(...params) as Array<{ id: string }>).map((row) => row.id);
     if (!retainedUids.length) {
       this.raw.prepare("DELETE FROM messages WHERE account_id = ? AND folder_kind = ?").run(accountId, kind);
-      return;
+      return ids;
     }
     const placeholders = retainedUids.map(() => "?").join(",");
     this.raw.prepare(`DELETE FROM messages WHERE account_id = ? AND folder_kind = ?
       AND (uid_validity != ? OR uid NOT IN (${placeholders}))`).run(accountId, kind, uidValidity, ...retainedUids);
+    return ids;
   }
 
-  enforceRetention(accountId: string): void {
+  enforceRetention(accountId: string): Array<{ id: string; folder: "inbox" | "junk" }> {
     const max = this.getSettings().maxMessagesPerAccount;
+    const removed = this.raw.prepare(`SELECT id, folder_kind AS folder FROM messages WHERE account_id = ? AND id NOT IN (
+      SELECT id FROM messages WHERE account_id = ? ORDER BY display_time DESC, folder_kind ASC, uid DESC LIMIT ?
+    )`).all(accountId, accountId, max) as Array<{ id: string; folder: "inbox" | "junk" }>;
     this.raw.prepare(`DELETE FROM messages WHERE account_id = ? AND id NOT IN (
-      SELECT id FROM messages WHERE account_id = ? ORDER BY display_time DESC, id DESC LIMIT ?
+      SELECT id FROM messages WHERE account_id = ? ORDER BY display_time DESC, folder_kind ASC, uid DESC LIMIT ?
     )`).run(accountId, accountId, max);
+    return removed;
   }
 
   listMessages(options: { accountId?: string; view: MessageView; after?: string; before?: string; cursor?: string; limit: number }): MessageListResponse {
@@ -343,7 +400,7 @@ export class AppDatabase {
     const config = this.crypto.decrypt<AccountConfigPayload>(asBuffer(row.config_enc));
     return {
       id: row.id, email: config.email, provider: config.imap.provider, imap: config.imap,
-      hasCredential: true, status: row.status, lastSyncedAt: row.last_sync_at,
+      hasCredential: true, status: row.status, syncMode: row.sync_mode, lastSyncedAt: row.last_sync_at,
       lastError: row.error_enc ? this.crypto.decrypt<string>(asBuffer(row.error_enc)) : null,
       createdAt: row.created_at, updatedAt: row.updated_at
     };
@@ -368,7 +425,19 @@ export class AppDatabase {
       if (!Array.isArray(value) || value.length !== 2 || value.some((part) => typeof part !== "string")) throw new Error();
       return value as [string, string];
     } catch {
-      throw new Error("Invalid cursor");
+      throw new InputError("分页游标无效");
     }
+  }
+
+  private migrate(): void {
+    const settingsColumns = new Set((this.raw.pragma("table_info(settings)") as Array<{ name: string }>).map((column) => column.name));
+    if (!settingsColumns.has("poll_interval_seconds")) {
+      this.raw.exec("ALTER TABLE settings ADD COLUMN poll_interval_seconds INTEGER NOT NULL DEFAULT 10 CHECK (poll_interval_seconds BETWEEN 5 AND 3600)");
+    }
+    const accountColumns = new Set((this.raw.pragma("table_info(accounts)") as Array<{ name: string }>).map((column) => column.name));
+    if (!accountColumns.has("sync_mode")) {
+      this.raw.exec("ALTER TABLE accounts ADD COLUMN sync_mode TEXT CHECK (sync_mode IS NULL OR sync_mode IN ('idle', 'polling'))");
+    }
+    this.raw.pragma("user_version = 2");
   }
 }

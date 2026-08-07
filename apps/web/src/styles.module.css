@@ -171,7 +171,7 @@
 .textBody { min-height: 0; margin: 0; overflow: auto; padding: 20px 24px 30px; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text); font: 14px/1.7 inherit; }
 
 .settingsSection { max-width: 760px; }
-.settingsForm { min-height: 112px; display: flex; align-items: center; justify-content: space-between; gap: 24px; padding: 20px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); }
+.settingsForm { min-height: 112px; display: grid; grid-template-columns: 1fr 1fr auto; align-items: center; gap: 24px; padding: 20px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); }
 .settingsForm > div { display: grid; gap: 8px; }
 .settingsForm p { margin: 0; color: var(--text-secondary); font-size: 12px; line-height: 1.5; }
 .numberControl { display: flex; align-items: center; gap: 9px; }
@@ -236,7 +236,7 @@
   .detailHeader h2 { font-size: 18px; }
   .bodyDivider { margin: 0 16px; }
   .textBody { padding: 18px 16px 30px; }
-  .settingsForm { align-items: stretch; flex-direction: column; }
+  .settingsForm { grid-template-columns: 1fr; align-items: stretch; }
   .settingsForm .button { align-self: flex-end; }
   .dialog { padding: 18px; }
   .fieldWide { grid-template-columns: minmax(0, 1fr) 90px; }

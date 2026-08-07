@@ -8,7 +8,7 @@ import {
   Menu, Paperclip, Plus, RefreshCw, SearchX, Settings as SettingsIcon, ShieldCheck,
   SlidersHorizontal, Trash2, UserRound, X
 } from "lucide-react";
-import type { Account, AccountInput, AccountUpdate, MessageDetail, MessageListResponse, MessageSummary, MessageView, ProviderId, Settings } from "@imap2api/shared";
+import type { Account, AccountInput, AccountUpdate, MessageDetail, MessageListResponse, MessageSummary, MessageView, ProviderId, ServerEvent, Settings } from "@imap2api/shared";
 import { ApiClient } from "./api";
 import { Button, EmptyState, IconButton, Spinner } from "./components";
 import styles from "./styles.module.css";
@@ -35,6 +35,13 @@ function formatDate(value: string | null, compact = false): string {
 function senderLabel(message: MessageSummary): string {
   const sender = message.from[0];
   return sender?.name || sender?.address || "未知发件人";
+}
+
+function abortableDelay(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(resolve, ms);
+    signal.addEventListener("abort", () => { clearTimeout(timer); resolve(); }, { once: true });
+  });
 }
 
 export function App() {
@@ -100,6 +107,7 @@ function AuthenticatedApp({ token, onLogout }: { token: string; onLogout: () => 
     return hash === "accounts" || hash === "settings" ? hash : "messages";
   });
   const [accounts, setAccounts] = useState<Account[]>([]);
+  const [messageRevision, setMessageRevision] = useState(0);
   const [notice, setNotice] = useState<{ kind: "success" | "error"; text: string } | null>(null);
   const reducedMotion = useReducedMotion();
 
@@ -110,9 +118,42 @@ function AuthenticatedApp({ token, onLogout }: { token: string; onLogout: () => 
 
   useEffect(() => {
     void loadAccounts();
-    const timer = setInterval(() => void loadAccounts(), 3000);
-    return () => clearInterval(timer);
-  }, [loadAccounts]);
+    const controller = new AbortController();
+    let messageRefresh: ReturnType<typeof setTimeout> | null = null;
+    const refreshMessages = () => {
+      if (messageRefresh) clearTimeout(messageRefresh);
+      messageRefresh = setTimeout(() => {
+        messageRefresh = null;
+        setMessageRevision((value) => value + 1);
+      }, 100);
+    };
+    void (async () => {
+      let retry = 0;
+      while (!controller.signal.aborted) {
+        try {
+          await api.subscribe((event: ServerEvent) => {
+            retry = 0;
+            if (event.type === "ready") {
+              void loadAccounts();
+              refreshMessages();
+            } else if (event.type === "account.changed") {
+              void loadAccounts();
+            } else if (event.type === "messages.changed") {
+              refreshMessages();
+            }
+          }, controller.signal);
+        } catch {
+          if (controller.signal.aborted) break;
+          const delays = [1000, 2000, 5000, 10_000, 30_000];
+          await abortableDelay(delays[Math.min(retry++, delays.length - 1)]!, controller.signal);
+        }
+      }
+    })();
+    return () => {
+      controller.abort();
+      if (messageRefresh) clearTimeout(messageRefresh);
+    };
+  }, [api, loadAccounts]);
 
   useEffect(() => {
     if (!notice) return;
@@ -142,7 +183,7 @@ function AuthenticatedApp({ token, onLogout }: { token: string; onLogout: () => 
         <main className={styles.mainContent}>
           <AnimatePresence mode="wait" initial={false}>
             <motion.div key={page} className={styles.pageFrame} initial={reducedMotion ? { opacity: 0 } : { opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} exit={reducedMotion ? { opacity: 0 } : { opacity: 0, y: -4 }} transition={{ duration: reducedMotion ? 0.08 : 0.2 }}>
-              {page === "messages" && <MessagesPage api={api} accounts={accounts} onNotice={setNotice} />}
+              {page === "messages" && <MessagesPage api={api} accounts={accounts} revision={messageRevision} onNotice={setNotice} />}
               {page === "accounts" && <AccountsPage api={api} accounts={accounts} reload={loadAccounts} onNotice={setNotice} />}
               {page === "settings" && <SettingsPage api={api} onNotice={setNotice} />}
             </motion.div>
@@ -168,6 +209,9 @@ function AccountsPage({ api, accounts, reload, onNotice }: { api: ApiClient; acc
   const [editing, setEditing] = useState<Account | "new" | null>(null);
   const [deleting, setDeleting] = useState<Account | null>(null);
   const [localSyncing, setLocalSyncing] = useState<Set<string>>(new Set());
+  const [pollIntervalSeconds, setPollIntervalSeconds] = useState(10);
+
+  useEffect(() => { void api.request<Settings>("/settings").then((value) => setPollIntervalSeconds(value.pollIntervalSeconds)); }, [api]);
 
   const sync = async (account: Account) => {
     setLocalSyncing((set) => new Set(set).add(account.id));
@@ -200,7 +244,7 @@ function AccountsPage({ api, accounts, reload, onNotice }: { api: ApiClient; acc
           {accounts.map((account) => {
             const syncing = localSyncing.has(account.id) || account.status === "connecting";
             return <article key={account.id} className={`${styles.accountRow} ${syncing ? styles.syncing : ""}`}>
-              <div className={styles.accountIdentity}><span className={styles.mailAvatar}><Mail size={18} /></span><div><strong>{account.email}</strong><span>{PROVIDERS.find((provider) => provider.value === account.provider)?.label ?? account.provider} · {account.imap.host}</span></div></div>
+              <div className={styles.accountIdentity}><span className={styles.mailAvatar}><Mail size={18} /></span><div><strong>{account.email}</strong><span>{PROVIDERS.find((provider) => provider.value === account.provider)?.label ?? account.provider} · {account.imap.host}</span><span>{account.syncMode === "idle" ? "IDLE 实时" : account.syncMode === "polling" ? `每 ${pollIntervalSeconds} 秒轮询` : "正在检测同步模式"}</span></div></div>
               <Status status={syncing ? "connecting" : account.status} />
               <div className={styles.accountTime}><span>最近同步</span><strong>{formatDate(account.lastSyncedAt, true)}</strong>{account.lastError && <small title={account.lastError}>{account.lastError}</small>}</div>
               <div className={styles.rowActions}>
@@ -272,7 +316,7 @@ function AccountDialog({ open, account, api, onOpenChange, onSaved }: { open: bo
   </Dialog.Content></Dialog.Portal></Dialog.Root>;
 }
 
-function MessagesPage({ api, accounts, onNotice }: { api: ApiClient; accounts: Account[]; onNotice: (notice: { kind: "success" | "error"; text: string }) => void }) {
+function MessagesPage({ api, accounts, revision, onNotice }: { api: ApiClient; accounts: Account[]; revision: number; onNotice: (notice: { kind: "success" | "error"; text: string }) => void }) {
   const [accountId, setAccountId] = useState(""); const [view, setView] = useState<MessageView>("all");
   const [items, setItems] = useState<MessageSummary[]>([]); const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState<string | null>(null); const [detail, setDetail] = useState<MessageDetail | null>(null);
@@ -287,7 +331,7 @@ function MessagesPage({ api, accounts, onNotice }: { api: ApiClient; accounts: A
     try { const result = await api.request<MessageListResponse>(`/messages?${query}`); setItems(result.items); setNextCursor(result.nextCursor); if (selected && !result.items.some((item) => item.id === selected)) { setSelected(null); setDetail(null); } }
     catch (error) { onNotice({ kind: "error", text: error instanceof Error ? error.message : "邮件加载失败" }); }
     finally { setLoading(false); }
-  }, [accountId, api, cursor, onNotice, selected, view]);
+  }, [accountId, api, cursor, onNotice, revision, selected, view]);
 
   useEffect(() => { void load(); }, [load]);
   useEffect(() => { setCursor(null); setHistory([]); setSelected(null); setDetail(null); }, [accountId, view]);
@@ -348,11 +392,12 @@ function MessageDetailView({ message, onBack, onMark }: { message: MessageDetail
 }
 
 function SettingsPage({ api, onNotice }: { api: ApiClient; onNotice: (notice: { kind: "success" | "error"; text: string }) => void }) {
-  const [settings, setSettings] = useState<Settings | null>(null); const [value, setValue] = useState("100"); const [busy, setBusy] = useState(false);
-  useEffect(() => { api.request<Settings>("/settings").then((result) => { setSettings(result); setValue(String(result.maxMessagesPerAccount)); }).catch((error) => onNotice({ kind: "error", text: error.message })); }, [api, onNotice]);
-  const save = async (event: FormEvent) => { event.preventDefault(); setBusy(true); try { const result = await api.request<Settings>("/settings", { method: "PATCH", body: JSON.stringify({ maxMessagesPerAccount: Number(value) }) }); setSettings(result); onNotice({ kind: "success", text: "系统设置已保存" }); } catch (error) { onNotice({ kind: "error", text: error instanceof Error ? error.message : "保存失败" }); } finally { setBusy(false); } };
+  const [settings, setSettings] = useState<Settings | null>(null); const [value, setValue] = useState("100"); const [interval, setIntervalValue] = useState("10"); const [busy, setBusy] = useState(false);
+  useEffect(() => { api.request<Settings>("/settings").then((result) => { setSettings(result); setValue(String(result.maxMessagesPerAccount)); setIntervalValue(String(result.pollIntervalSeconds)); }).catch((error) => onNotice({ kind: "error", text: error.message })); }, [api, onNotice]);
+  const save = async (event: FormEvent) => { event.preventDefault(); setBusy(true); try { const result = await api.request<Settings>("/settings", { method: "PATCH", body: JSON.stringify({ maxMessagesPerAccount: Number(value), pollIntervalSeconds: Number(interval) }) }); setSettings(result); onNotice({ kind: "success", text: "系统设置已保存" }); } catch (error) { onNotice({ kind: "error", text: error instanceof Error ? error.message : "保存失败" }); } finally { setBusy(false); } };
   if (!settings) return <div className={styles.centerState}><Spinner /></div>;
-  return <section className={styles.settingsSection}><div className={styles.sectionToolbar}><div><h2>邮件缓存</h2><p>全局存储策略</p></div></div><form className={styles.settingsForm} onSubmit={save}><div><label htmlFor="max-messages">每个账号最多保留</label><div className={styles.numberControl}><input id="max-messages" type="number" min="1" max="10000" value={value} onChange={(event) => setValue(event.target.value)} /><span>封邮件</span></div><p>收件箱和垃圾箱合计计算，超出后删除最旧的本地缓存。</p></div><Button variant="primary" disabled={busy || Number(value) === settings.maxMessagesPerAccount}>{busy ? <Spinner label="正在保存" /> : "保存设置"}</Button></form></section>;
+  const unchanged = Number(value) === settings.maxMessagesPerAccount && Number(interval) === settings.pollIntervalSeconds;
+  return <section className={styles.settingsSection}><div className={styles.sectionToolbar}><div><h2>同步与缓存</h2><p>全局邮件策略</p></div></div><form className={styles.settingsForm} onSubmit={save}><div><label htmlFor="max-messages">每个账号最多保留</label><div className={styles.numberControl}><input id="max-messages" type="number" min="1" max="10000" value={value} onChange={(event) => setValue(event.target.value)} /><span>封邮件</span></div><p>收件箱和垃圾箱合计计算，超出后删除最旧的本地缓存。</p></div><div><label htmlFor="poll-interval">无 IDLE 时轮询间隔</label><div className={styles.numberControl}><input id="poll-interval" type="number" min="5" max="3600" value={interval} onChange={(event) => setIntervalValue(event.target.value)} /><span>秒</span></div><p>支持 IDLE 的邮箱保持实时长连接，此设置只用于不支持 IDLE 的服务器。</p></div><Button variant="primary" disabled={busy || unchanged}>{busy ? <Spinner label="正在保存" /> : "保存设置"}</Button></form></section>;
 }
 
 function ConfirmDialog({ open, title, description, confirmLabel, danger = false, onOpenChange, onConfirm }: { open: boolean; title: string; description: string; confirmLabel: string; danger?: boolean; onOpenChange: (open: boolean) => void; onConfirm: () => void }) {

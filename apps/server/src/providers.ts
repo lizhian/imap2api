@@ -1,4 +1,5 @@
 import type { ImapConfig, ProviderId } from "@imap2api/shared";
+import { InputError } from "./errors.js";
 
 export interface ResolvedImapConfig {
   provider: ProviderId;
@@ -33,8 +34,8 @@ export function resolveImapConfig(email: string, input?: ImapConfig): ResolvedIm
   const host = input?.host?.trim() || preset?.host;
   const port = input?.port ?? preset?.port ?? 993;
   const secure = input?.secure ?? preset?.secure ?? true;
-  if (!host) throw new Error("无法识别邮箱服务商，请填写 IMAP 主机或选择服务商预设");
-  if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error("IMAP 端口无效");
+  if (!host) throw new InputError("无法识别邮箱服务商，请填写 IMAP 主机或选择服务商预设");
+  if (!Number.isInteger(port) || port < 1 || port > 65535) throw new InputError("IMAP 端口无效");
   return { provider, host, port, secure };
 }
 

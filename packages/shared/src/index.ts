@@ -1,6 +1,8 @@
 export type ProviderId = "auto" | "qq" | "gmail" | "icloud" | "outlook" | "qq-enterprise" | "163" | "custom";
 export type ConnectionStatus = "pending" | "connecting" | "connected" | "warning" | "error";
+export type SyncMode = "idle" | "polling";
 export type MessageView = "all" | "unread" | "junk";
+export type FolderKind = "inbox" | "junk";
 
 export interface ImapConfig {
   provider: ProviderId;
@@ -16,6 +18,7 @@ export interface Account {
   imap: Required<Pick<ImapConfig, "host" | "port" | "secure">>;
   hasCredential: true;
   status: ConnectionStatus;
+  syncMode: SyncMode | null;
   lastSyncedAt: string | null;
   lastError: string | null;
   createdAt: string;
@@ -67,7 +70,43 @@ export interface MessageListResponse {
 
 export interface Settings {
   maxMessagesPerAccount: number;
+  pollIntervalSeconds: number;
 }
+
+export interface SyncTriggerResult {
+  status: "started" | "running";
+}
+
+export interface ReadAllResult {
+  count: number;
+  failedFolders: FolderKind[];
+}
+
+export interface ReadyEvent {
+  type: "ready";
+  serverTime: string;
+}
+
+export interface MessagesChangedEvent {
+  type: "messages.changed";
+  accountId: string;
+  folder: "inbox" | "junk";
+  addedIds: string[];
+  updatedIds: string[];
+  deletedIds: string[];
+  occurredAt: string;
+}
+
+export interface AccountChangedEvent {
+  type: "account.changed";
+  accountId: string;
+  status: ConnectionStatus;
+  syncMode: SyncMode | null;
+  lastSyncedAt: string | null;
+  occurredAt: string;
+}
+
+export type ServerEvent = ReadyEvent | MessagesChangedEvent | AccountChangedEvent;
 
 export interface ApiError {
   error: {

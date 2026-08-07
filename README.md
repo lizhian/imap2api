@@ -4,7 +4,7 @@
 
 ## 功能
 
-- 多 IMAP 账号管理、连接测试、状态显示、后台轮询和手动同步
+- 多 IMAP 账号管理、连接测试、IDLE 实时同步、轮询回退和手动同步
 - 全部、未读、垃圾箱邮件列表及安全正文查看
 - 单封已读/未读和当前账号缓存邮件全部已读
 - QQ、Gmail、iCloud、Outlook、QQ 企业邮箱、163 邮箱预设
@@ -76,7 +76,7 @@ npm run build
 | `IMAP2API_DATA_DIR` | `/data` | SQLite 数据目录 |
 | `PORT` | `3000` | HTTP 监听端口 |
 | `HOST` | `0.0.0.0` | HTTP 监听地址 |
-| `SYNC_INTERVAL_SECONDS` | `300` | 后台同步间隔，最小 30 秒 |
+| `SYNC_INTERVAL_SECONDS` | `10` | 新数据库的无 IDLE 轮询初始值，范围 5–3600 秒；初始化后由系统设置管理 |
 | `LOG_LEVEL` | `info` | Fastify 日志等级 |
 
 ## HTTP API
@@ -101,9 +101,17 @@ curl -H "Authorization: Bearer $IMAP2API_TOKEN" \
 | `GET` | `/api/v1/messages/:id` | 查询邮件详情 |
 | `PATCH` | `/api/v1/messages/:id/read` | 标记已读或未读 |
 | `POST` | `/api/v1/accounts/:id/messages/read-all` | 当前账号缓存全部已读 |
-| `GET/PATCH` | `/api/v1/settings` | 查询或修改缓存上限 |
+| `GET/PATCH` | `/api/v1/settings` | 查询或修改缓存上限与轮询间隔 |
+| `GET` | `/api/v1/events` | 订阅邮件缓存和账号状态 SSE 事件 |
 
 邮件列表支持 `accountId`、`view=all|unread|junk`、`after`、`before`、`cursor` 和 `limit`。时间参数使用带时区的 ISO 8601 格式，`limit` 默认 50、最大 100。
+
+SSE 使用相同的 Bearer Token，不接受 URL Token。连接建立后会先发送 `ready`，客户端收到 `messages.changed` 后可重新查询邮件列表：
+
+```bash
+curl -N -H "Authorization: Bearer $IMAP2API_TOKEN" \
+  http://localhost:3000/api/v1/events
+```
 
 ## 邮箱授权说明
 
