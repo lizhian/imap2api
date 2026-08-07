@@ -8,7 +8,7 @@ export function IconButton({ label, children, className = "", ...props }: HTMLMo
     <Tooltip.Provider delayDuration={500}>
       <Tooltip.Root>
         <Tooltip.Trigger asChild>
-          <motion.button whileTap={{ scale: 0.98 }} className={`${styles.iconButton} ${className}`} aria-label={label} {...props}>{children}</motion.button>
+          <motion.button whileTap={{ scale: 0.98 }} className={`btn btn-ghost btn-square btn-sm ${styles.iconButton} ${className}`} aria-label={label} {...props}>{children}</motion.button>
         </Tooltip.Trigger>
         <Tooltip.Portal><Tooltip.Content sideOffset={6} className={styles.tooltip}>{label}<Tooltip.Arrow className={styles.tooltipArrow} /></Tooltip.Content></Tooltip.Portal>
       </Tooltip.Root>
@@ -17,11 +17,12 @@ export function IconButton({ label, children, className = "", ...props }: HTMLMo
 }
 
 export function Button({ children, variant = "default", className = "", ...props }: HTMLMotionProps<"button"> & { variant?: "default" | "primary" | "danger" | "quiet" }) {
-  return <motion.button whileTap={{ scale: 0.98 }} className={`${styles.button} ${styles[variant]} ${className}`} {...props}>{children}</motion.button>;
+  const daisyVariant = variant === "primary" ? "btn-primary" : variant === "danger" ? "btn-error" : variant === "quiet" ? "btn-ghost" : "";
+  return <motion.button whileTap={{ scale: 0.98 }} className={`btn btn-sm ${daisyVariant} ${styles.button} ${styles[variant]} ${className}`} {...props}>{children}</motion.button>;
 }
 
 export function Spinner({ label = "正在加载" }: { label?: string }) {
-  return <span className={styles.spinner} role="status" aria-label={label} />;
+  return <span className="loading loading-spinner loading-sm" role="status" aria-label={label} />;
 }
 
 export function EmptyState({ icon, title, action }: { icon: ReactNode; title: string; action?: ReactNode }) {

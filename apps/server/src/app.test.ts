@@ -32,7 +32,17 @@ describe("HTTP API", () => {
     });
     expect(created.statusCode).toBe(201);
     expect(created.body).not.toContain("top-secret");
-    expect(created.json()).toMatchObject({ email: "api@gmail.com", aliases: ["alias@gmail.com"], hasCredential: true });
+    expect(created.json()).toMatchObject({ email: "api@gmail.com", aliases: ["alias@gmail.com"], hasCredential: true, messageCount: 0, unreadCount: 0 });
+    const second = await app.inject({
+      method: "POST", url: "/api/v1/accounts", headers: { authorization: `Bearer ${token}` },
+      payload: { email: "second@gmail.com", password: "top-secret" }
+    });
+    const ordered = await app.inject({
+      method: "PUT", url: "/api/v1/accounts/order", headers: { authorization: `Bearer ${token}` },
+      payload: { accountIds: [second.json().id, created.json().id] }
+    });
+    expect(ordered.statusCode).toBe(200);
+    expect(ordered.json().map((account: { id: string }) => account.id)).toEqual([second.json().id, created.json().id]);
     const invalidAlias = await app.inject({
       method: "POST", url: "/api/v1/accounts", headers: { authorization: `Bearer ${token}` },
       payload: { email: "other@gmail.com", aliases: ["other@gmail.com"], password: "top-secret" }

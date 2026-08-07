@@ -30,6 +30,9 @@ const accountUpdateSchema = z.object({
   aliases: aliasesSchema,
   imap: imapSchema
 }).refine((value) => Object.keys(value).length > 0, "至少提供一个修改字段");
+const accountOrderSchema = z.object({
+  accountIds: z.array(z.uuid()).max(1000)
+}).refine((value) => new Set(value.accountIds).size === value.accountIds.length, "账号排序不能包含重复项");
 const messageListSchema = z.object({
   accountId: z.string().uuid().optional(),
   view: z.enum(["all", "unread", "junk"]).default("all"),
@@ -97,6 +100,7 @@ export async function buildApp(config: AppConfig, dependencies: AppDependencies 
       imap.startAccount(account.id);
       return reply.code(201).send(account);
     });
+    api.put("/accounts/order", async (request) => db.reorderAccounts(accountOrderSchema.parse(request.body).accountIds));
     api.patch<{ Params: { id: string } }>("/accounts/:id", async (request, reply) => {
       const previous = db.getAccount(request.params.id);
       if (!previous) throw new AccountNotFoundError();

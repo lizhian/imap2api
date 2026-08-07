@@ -73,8 +73,14 @@ interface AccountRow {
   sync_mode: SyncMode | null;
   last_sync_at: string | null;
   error_enc: Buffer | null;
+  sort_order: number;
   created_at: string;
   updated_at: string;
+}
+
+interface PublicAccountRow extends AccountRow {
+  message_count: number;
+  unread_count: number;
 }
 
 interface MessageRow {
@@ -109,6 +115,7 @@ CREATE TABLE IF NOT EXISTS accounts (
   sync_mode TEXT CHECK (sync_mode IS NULL OR sync_mode IN ('idle', 'polling')),
   last_sync_at TEXT,
   error_enc BLOB,
+  sort_order INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
@@ -208,7 +215,22 @@ export class AppDatabase {
   }
 
   listAccounts(): Account[] {
-    return (this.raw.prepare("SELECT * FROM accounts ORDER BY created_at ASC").all() as AccountRow[]).map((row) => this.toPublicAccount(row));
+    return (this.raw.prepare(`SELECT accounts.*,
+      (SELECT COUNT(*) FROM messages WHERE messages.account_id = accounts.id) AS message_count,
+      (SELECT COUNT(*) FROM messages WHERE messages.account_id = accounts.id AND messages.is_read = 0) AS unread_count
+      FROM accounts ORDER BY accounts.sort_order ASC, accounts.created_at ASC, accounts.id ASC`).all() as PublicAccountRow[]).map((row) => this.toPublicAccount(row));
+  }
+
+  reorderAccounts(accountIds: string[]): Account[] {
+    return this.raw.transaction(() => {
+      const existing = (this.raw.prepare("SELECT id FROM accounts").all() as Array<{ id: string }>).map((row) => row.id);
+      if (accountIds.length !== existing.length || new Set(accountIds).size !== existing.length || accountIds.some((id) => !existing.includes(id))) {
+        throw new InputError("账号排序数据无效");
+      }
+      const update = this.raw.prepare("UPDATE accounts SET sort_order = ? WHERE id = ?");
+      accountIds.forEach((id, index) => update.run(index, id));
+      return this.listAccounts();
+    })();
   }
 
   getAccount(id: string): StoredAccount | null {
@@ -234,11 +256,12 @@ export class AppDatabase {
     const email = input.email.trim().toLowerCase();
     const aliases = normalizeAliases(email, input.aliases ?? []);
     const imap = resolveImapConfig(email, input.imap);
+    const sortOrder = (this.raw.prepare("SELECT COALESCE(MAX(sort_order), -1) + 1 AS value FROM accounts").get() as { value: number }).value;
     this.raw.prepare(`
-      INSERT INTO accounts(id, email_hash, config_enc, credential_enc, status, created_at, updated_at)
-      VALUES (?, ?, ?, ?, 'pending', ?, ?)
-    `).run(id, this.crypto.fingerprint(email), this.crypto.encrypt({ email, aliases, imap }), this.crypto.encrypt(input.password), now, now);
-    return this.toPublicAccount(this.raw.prepare("SELECT * FROM accounts WHERE id = ?").get(id) as AccountRow);
+      INSERT INTO accounts(id, email_hash, config_enc, credential_enc, status, sort_order, created_at, updated_at)
+      VALUES (?, ?, ?, ?, 'pending', ?, ?, ?)
+    `).run(id, this.crypto.fingerprint(email), this.crypto.encrypt({ email, aliases, imap }), this.crypto.encrypt(input.password), sortOrder, now, now);
+    return this.toPublicAccount(this.selectPublicAccount(id));
   }
 
   updateAccount(id: string, input: AccountUpdate): Account | null {
@@ -253,7 +276,7 @@ export class AppDatabase {
       UPDATE accounts SET email_hash = ?, config_enc = ?, credential_enc = ?, status = 'pending',
         sync_mode = NULL, error_enc = NULL, updated_at = ? WHERE id = ?
     `).run(this.crypto.fingerprint(email), this.crypto.encrypt({ email, aliases, imap }), credential, now, id);
-    return this.toPublicAccount(this.raw.prepare("SELECT * FROM accounts WHERE id = ?").get(id) as AccountRow);
+    return this.toPublicAccount(this.selectPublicAccount(id));
   }
 
   deleteAccount(id: string): boolean {
@@ -448,11 +471,20 @@ export class AppDatabase {
     return this.raw.prepare("UPDATE messages SET is_read = 1, updated_at = ? WHERE account_id = ? AND is_read = 0").run(new Date().toISOString(), accountId).changes;
   }
 
-  private toPublicAccount(row: AccountRow): Account {
+  private selectPublicAccount(id: string): PublicAccountRow {
+    return this.raw.prepare(`SELECT accounts.*,
+      (SELECT COUNT(*) FROM messages WHERE messages.account_id = accounts.id) AS message_count,
+      (SELECT COUNT(*) FROM messages WHERE messages.account_id = accounts.id AND messages.is_read = 0) AS unread_count
+      FROM accounts WHERE accounts.id = ?`).get(id) as PublicAccountRow;
+  }
+
+  private toPublicAccount(row: AccountRow | PublicAccountRow): Account {
     const config = this.crypto.decrypt<AccountConfigPayload>(asBuffer(row.config_enc));
     return {
       id: row.id, email: config.email, aliases: config.aliases ?? [], provider: config.imap.provider, imap: config.imap,
-      hasCredential: true, status: row.status, syncMode: row.sync_mode, lastSyncedAt: row.last_sync_at,
+      hasCredential: true, status: row.status, syncMode: row.sync_mode,
+      messageCount: "message_count" in row ? row.message_count : 0,
+      unreadCount: "unread_count" in row ? row.unread_count : 0, lastSyncedAt: row.last_sync_at,
       lastError: row.error_enc ? this.crypto.decrypt<string>(asBuffer(row.error_enc)) : null,
       createdAt: row.created_at, updatedAt: row.updated_at
     };
@@ -491,7 +523,13 @@ export class AppDatabase {
     if (!accountColumns.has("sync_mode")) {
       this.raw.exec("ALTER TABLE accounts ADD COLUMN sync_mode TEXT CHECK (sync_mode IS NULL OR sync_mode IN ('idle', 'polling'))");
     }
-    this.raw.pragma("user_version = 2");
+    if (!accountColumns.has("sort_order")) {
+      this.raw.exec("ALTER TABLE accounts ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0");
+      const rows = this.raw.prepare("SELECT id FROM accounts ORDER BY created_at ASC, id ASC").all() as Array<{ id: string }>;
+      const update = this.raw.prepare("UPDATE accounts SET sort_order = ? WHERE id = ?");
+      this.raw.transaction(() => rows.forEach((row, index) => update.run(index, row.id)))();
+    }
+    this.raw.pragma("user_version = 3");
   }
 }
 

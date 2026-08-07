@@ -21,6 +21,8 @@ export interface Account {
   hasCredential: true;
   status: ConnectionStatus;
   syncMode: SyncMode | null;
+  messageCount: number;
+  unreadCount: number;
   lastSyncedAt: string | null;
   lastError: string | null;
   createdAt: string;
@@ -39,6 +41,10 @@ export interface AccountUpdate {
   password?: string;
   aliases?: string[];
   imap?: ImapConfig;
+}
+
+export interface AccountOrderUpdate {
+  accountIds: string[];
 }
 
 export interface Address {

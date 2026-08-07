@@ -1,14 +1,14 @@
-import { useCallback, useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent as ReactDragEvent, type FormEvent, type KeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
 import * as AlertDialog from "@radix-ui/react-alert-dialog";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import {
   Archive, ArrowLeft, Check, ChevronLeft, ChevronRight, CircleAlert, CircleCheck,
-  Cloud, Copy, Edit3, ExternalLink, Eye, EyeOff, FileText, Forward, Image as ImageIcon, Inbox, KeyRound, LogOut, Mail, MailCheck,
-  Menu, Paperclip, Plus, RefreshCw, SearchX, Settings as SettingsIcon, ShieldCheck,
+  Cloud, Copy, Edit3, ExternalLink, Eye, EyeOff, FileText, Forward, GripVertical, Image as ImageIcon, Inbox, KeyRound, LogOut, Mail, MailCheck,
+  Paperclip, Plus, RefreshCw, SearchX, Settings as SettingsIcon, ShieldCheck,
   SlidersHorizontal, Trash2, UserRound, X
 } from "lucide-react";
-import type { Account, AccountInput, AccountUpdate, MessageDetail, MessageLabel, MessageListResponse, MessageSummary, MessageView, ProviderId, ServerEvent, Settings } from "@imap2api/shared";
+import type { Account, AccountInput, AccountOrderUpdate, AccountUpdate, MessageDetail, MessageLabel, MessageListResponse, MessageSummary, MessageView, ProviderId, ServerEvent, Settings } from "@imap2api/shared";
 import { ApiClient } from "./api";
 import { Button, EmptyState, IconButton, Spinner } from "./components";
 import styles from "./styles.module.css";
@@ -37,6 +37,19 @@ function formatDate(value: string | null, compact = false): string {
   ).format(date);
 }
 
+export function formatRelativeDate(value: string, now = Date.now()): string {
+  const elapsedSeconds = Math.max(1, Math.floor((now - new Date(value).getTime()) / 1000));
+  if (elapsedSeconds < 60) return `${elapsedSeconds}秒前`;
+  const elapsedMinutes = Math.floor(elapsedSeconds / 60);
+  if (elapsedMinutes < 60) return `${elapsedMinutes}分前`;
+  const elapsedHours = Math.floor(elapsedMinutes / 60);
+  if (elapsedHours < 24) return `${elapsedHours}小时前`;
+  const elapsedDays = Math.floor(elapsedHours / 24);
+  if (elapsedDays < 30) return `${elapsedDays}天前`;
+  if (elapsedDays < 365) return `${Math.floor(elapsedDays / 30)}月前`;
+  return `${Math.floor(elapsedDays / 365)}年前`;
+}
+
 function senderLabel(message: MessageSummary): string {
   const sender = message.from[0];
   return sender?.name || sender?.address || "未知发件人";
@@ -47,6 +60,33 @@ function abortableDelay(ms: number, signal: AbortSignal): Promise<void> {
     const timer = setTimeout(resolve, ms);
     signal.addEventListener("abort", () => { clearTimeout(timer); resolve(); }, { once: true });
   });
+}
+
+function ResizeHandle({ value, min, max, label, onChange }: { value: number; min: number; max: () => number; label: string; onChange: (value: number) => void }) {
+  const drag = useRef<{ pointerId: number; startX: number; startValue: number } | null>(null);
+  const clamp = (next: number) => Math.min(Math.max(min, max()), Math.max(min, next));
+  const handlePointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
+    drag.current = { pointerId: event.pointerId, startX: event.clientX, startValue: value };
+    event.currentTarget.setPointerCapture(event.pointerId);
+  };
+  const handlePointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (!drag.current || drag.current.pointerId !== event.pointerId) return;
+    onChange(clamp(drag.current.startValue + event.clientX - drag.current.startX));
+  };
+  const handlePointerUp = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (drag.current?.pointerId !== event.pointerId) return;
+    drag.current = null;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+  };
+  const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (event.key !== "ArrowLeft" && event.key !== "ArrowRight" && event.key !== "Home" && event.key !== "End") return;
+    event.preventDefault();
+    const step = event.shiftKey ? 32 : 8;
+    if (event.key === "Home") onChange(min);
+    else if (event.key === "End") onChange(Math.max(min, max()));
+    else onChange(clamp(value + (event.key === "ArrowLeft" ? -step : step)));
+  };
+  return <div className={styles.resizeHandle} role="separator" aria-label={label} aria-orientation="vertical" aria-valuemin={min} aria-valuemax={Math.max(min, max())} aria-valuenow={Math.round(value)} tabIndex={0} onKeyDown={handleKeyDown} onPointerDown={handlePointerDown} onPointerMove={handlePointerMove} onPointerUp={handlePointerUp} onPointerCancel={handlePointerUp}><span aria-hidden="true" /></div>;
 }
 
 export function App() {
@@ -88,13 +128,13 @@ function Login({ onLogin }: { onLogin: (token: string) => void }) {
 
   return (
     <main className={styles.loginPage}>
-      <motion.form initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.24 }} className={styles.loginPanel} onSubmit={submit}>
+      <motion.form initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.24 }} className={`card bg-base-100 ${styles.loginPanel}`} onSubmit={submit}>
         <div className={styles.brandMark}><Mail size={20} strokeWidth={2} /></div>
         <h1>imap2api</h1>
         <div className={styles.field}>
           <label htmlFor="token">访问 Token</label>
           <div className={styles.passwordField}>
-            <input id="token" value={value} onChange={(event) => setValue(event.target.value)} type={visible ? "text" : "password"} autoFocus autoComplete="current-password" required />
+            <input className="input input-sm" id="token" value={value} onChange={(event) => setValue(event.target.value)} type={visible ? "text" : "password"} autoFocus autoComplete="current-password" required />
             <IconButton type="button" label={visible ? "隐藏 Token" : "显示 Token"} onClick={() => setVisible((state) => !state)}>{visible ? <EyeOff size={17} /> : <Eye size={17} />}</IconButton>
           </div>
         </div>
@@ -112,7 +152,10 @@ function AuthenticatedApp({ token, onLogout }: { token: string; onLogout: () => 
     return hash === "accounts" || hash === "settings" ? hash : "messages";
   });
   const [accounts, setAccounts] = useState<Account[]>([]);
+  const [activeAccountId, setActiveAccountId] = useState("");
   const [messageRevision, setMessageRevision] = useState(0);
+  const [eventConnection, setEventConnection] = useState<"connecting" | "connected" | "reconnecting">("connecting");
+  const [sidebarWidth, setSidebarWidth] = useState(248);
   const [notice, setNotice] = useState<{ kind: "success" | "error"; text: string } | null>(null);
   const reducedMotion = useReducedMotion();
 
@@ -120,6 +163,21 @@ function AuthenticatedApp({ token, onLogout }: { token: string; onLogout: () => 
     try { setAccounts(await api.request<Account[]>("/accounts")); }
     catch (error) { setNotice({ kind: "error", text: error instanceof Error ? error.message : "账号加载失败" }); }
   }, [api]);
+
+  const reorderAccounts = useCallback(async (accountIds: string[]) => {
+    const previous = accounts;
+    const byId = new Map(accounts.map((account) => [account.id, account]));
+    const optimistic = accountIds.map((id) => byId.get(id)).filter((account): account is Account => Boolean(account));
+    if (optimistic.length !== accounts.length) throw new Error("账号排序数据无效");
+    setAccounts(optimistic);
+    try {
+      const input: AccountOrderUpdate = { accountIds };
+      setAccounts(await api.request<Account[]>("/accounts/order", { method: "PUT", body: JSON.stringify(input) }));
+    } catch (error) {
+      setAccounts(previous);
+      throw error;
+    }
+  }, [accounts, api]);
 
   useEffect(() => {
     void loadAccounts();
@@ -139,16 +197,19 @@ function AuthenticatedApp({ token, onLogout }: { token: string; onLogout: () => 
           await api.subscribe((event: ServerEvent) => {
             retry = 0;
             if (event.type === "ready") {
+              setEventConnection("connected");
               void loadAccounts();
               refreshMessages();
             } else if (event.type === "account.changed") {
               void loadAccounts();
             } else if (event.type === "messages.changed") {
+              void loadAccounts();
               refreshMessages();
             }
           }, controller.signal);
         } catch {
           if (controller.signal.aborted) break;
+          setEventConnection("reconnecting");
           const delays = [1000, 2000, 5000, 10_000, 30_000];
           await abortableDelay(delays[Math.min(retry++, delays.length - 1)]!, controller.signal);
         }
@@ -161,35 +222,49 @@ function AuthenticatedApp({ token, onLogout }: { token: string; onLogout: () => 
   }, [api, loadAccounts]);
 
   useEffect(() => {
+    if (activeAccountId && !accounts.some((account) => account.id === activeAccountId)) setActiveAccountId("");
+  }, [accounts, activeAccountId]);
+
+  useEffect(() => {
     if (!notice) return;
     const timer = setTimeout(() => setNotice(null), 3800);
     return () => clearTimeout(timer);
   }, [notice]);
 
   const navigate = (next: Page) => { location.hash = next; setPage(next); };
-  const title = page === "messages" ? "邮件" : page === "accounts" ? "邮箱账号" : "系统设置";
+  const openMailbox = (accountId: string) => { setActiveAccountId(accountId); navigate("messages"); };
+  const totalUnread = accounts.reduce((sum, account) => sum + (account.unreadCount ?? 0), 0);
+  const connectionBadge = eventConnection === "connected"
+    ? { badge: "badge-success", status: "status-success", label: "服务正常" }
+    : eventConnection === "reconnecting"
+      ? { badge: "badge-warning", status: "status-warning", label: "正在重连" }
+      : { badge: "badge-info", status: "status-info", label: "连接中" };
 
   return (
-    <div className={styles.appShell}>
-      <aside className={styles.sidebar}>
-        <div className={styles.sidebarBrand}><span className={styles.brandMark}><Mail size={18} /></span><strong>imap2api</strong></div>
-        <nav aria-label="主导航">
-          <NavButton active={page === "messages"} icon={<Inbox size={18} />} label="邮件" onClick={() => navigate("messages")} />
-          <NavButton active={page === "accounts"} icon={<UserRound size={18} />} label="邮箱账号" onClick={() => navigate("accounts")} />
-          <NavButton active={page === "settings"} icon={<SettingsIcon size={18} />} label="系统设置" onClick={() => navigate("settings")} />
+    <div className={`${styles.appShell} bg-base-200 text-base-content`} style={{ "--sidebar-width": `${sidebarWidth}px` } as CSSProperties}>
+      <aside className={`${styles.sidebar} bg-base-100`}>
+        <div className={styles.sidebarBrand}><span className={styles.brandMark}><Mail size={18} /></span><strong>imap2api</strong><span className={`status status-xs ${connectionBadge.status}`} aria-label={connectionBadge.label} /></div>
+        <nav className={`tabs ${styles.accountTabs}`} role="tablist" aria-label="邮箱账号">
+          <button role="tab" aria-selected={page === "messages" && !activeAccountId} className={`tab ${page === "messages" && !activeAccountId ? "tab-active" : ""} ${styles.accountTab} ${styles.accountTabWithIcon}`} onClick={() => openMailbox("")}>
+            <span className={styles.accountTabIcon}><Inbox size={16} /></span><span className={`${styles.accountTabText} ${styles.aggregateTabText}`}><strong>聚合收件箱</strong><small className={styles.unreadCount} aria-label={`${totalUnread} 封未读`}>{totalUnread} 未读</small></span>
+          </button>
+          {accounts.map((account) => <button key={account.id} role="tab" aria-selected={page === "messages" && activeAccountId === account.id} className={`tab ${page === "messages" && activeAccountId === account.id ? "tab-active" : ""} ${styles.accountTab}`} onClick={() => openMailbox(account.id)}>
+            <span className={styles.accountTabText}><strong>{account.email}</strong><span className={styles.accountTabSubline}><small>{account.status === "connected" ? "已连接" : account.status === "connecting" ? "同步中" : account.status === "warning" ? "有警告" : account.status === "error" ? "连接错误" : "等待连接"}</small><small className={styles.unreadCount} aria-label={`${account.unreadCount ?? 0} 封未读`}>{account.unreadCount ?? 0} 未读</small></span></span>
+          </button>)}
         </nav>
-        <button className={styles.logoutButton} onClick={onLogout}><LogOut size={17} />退出</button>
+        <nav className={`menu menu-sm ${styles.utilityNav}`} aria-label="管理导航">
+          <li><NavButton active={page === "accounts"} icon={<UserRound size={17} />} label="账号管理" onClick={() => navigate("accounts")} /></li>
+          <li><NavButton active={page === "settings"} icon={<SettingsIcon size={17} />} label="系统设置" onClick={() => navigate("settings")} /></li>
+        </nav>
+        <button className={`btn btn-ghost btn-sm ${styles.logoutButton}`} onClick={onLogout}><LogOut size={17} />退出</button>
       </aside>
+      <ResizeHandle value={sidebarWidth} min={200} max={() => Math.min(360, window.innerWidth - 680)} label="调整邮箱栏宽度" onChange={setSidebarWidth} />
       <div className={styles.mainColumn}>
-        <header className={styles.topbar}>
-          <div><p className={styles.eyebrow}>IMAP 控制台</p><h1>{title}</h1></div>
-          <div className={styles.systemState}><span className={styles.liveDot} />服务正常</div>
-        </header>
-        <main className={styles.mainContent}>
+        <main className={`${styles.mainContent} ${page === "messages" ? styles.messageContent : ""}`}>
           <AnimatePresence mode="wait" initial={false}>
-            <motion.div key={page} className={styles.pageFrame} initial={reducedMotion ? { opacity: 0 } : { opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} exit={reducedMotion ? { opacity: 0 } : { opacity: 0, y: -4 }} transition={{ duration: reducedMotion ? 0.08 : 0.2 }}>
-              {page === "messages" && <MessagesPage api={api} accounts={accounts} revision={messageRevision} onNotice={setNotice} />}
-              {page === "accounts" && <AccountsPage api={api} accounts={accounts} reload={loadAccounts} onNotice={setNotice} />}
+            <motion.div key={page} className={`${styles.pageFrame} ${page === "messages" ? styles.messageFrame : ""}`} initial={reducedMotion ? { opacity: 0 } : { opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} exit={reducedMotion ? { opacity: 0 } : { opacity: 0, y: -4 }} transition={{ duration: reducedMotion ? 0.08 : 0.2 }}>
+              {page === "messages" && <MessagesPage api={api} accounts={accounts} accountId={activeAccountId} onAccountChange={setActiveAccountId} revision={messageRevision} onNotice={setNotice} />}
+              {page === "accounts" && <AccountsPage api={api} accounts={accounts} reload={loadAccounts} reorder={reorderAccounts} onNotice={setNotice} />}
               {page === "settings" && <SettingsPage api={api} onNotice={setNotice} />}
             </motion.div>
           </AnimatePresence>
@@ -201,22 +276,30 @@ function AuthenticatedApp({ token, onLogout }: { token: string; onLogout: () => 
         <NavButton active={page === "settings"} icon={<SettingsIcon size={19} />} label="设置" onClick={() => navigate("settings")} />
         <NavButton active={false} icon={<LogOut size={19} />} label="退出" onClick={onLogout} />
       </nav>
-      <AnimatePresence>{notice && <motion.div role="status" aria-live="polite" className={`${styles.notice} ${styles[notice.kind]}`} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 4 }}>{notice.kind === "success" ? <CircleCheck size={17} /> : <CircleAlert size={17} />}{notice.text}</motion.div>}</AnimatePresence>
+      <AnimatePresence>{notice && <motion.div role="status" aria-live="polite" className={`alert alert-soft ${notice.kind === "success" ? "alert-success" : "alert-error"} ${styles.notice}`} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 4 }}>{notice.kind === "success" ? <CircleCheck size={17} /> : <CircleAlert size={17} />}{notice.text}</motion.div>}</AnimatePresence>
     </div>
   );
 }
 
 function NavButton({ active, icon, label, onClick }: { active: boolean; icon: ReactNode; label: string; onClick: () => void }) {
-  return <button className={`${styles.navButton} ${active ? styles.navActive : ""}`} aria-current={active ? "page" : undefined} onClick={onClick}>{icon}<span>{label}</span></button>;
+  return <button className={`${active ? "menu-active" : ""} ${styles.navButton}`} aria-current={active ? "page" : undefined} onClick={onClick}>{icon}<span>{label}</span></button>;
 }
 
-function AccountsPage({ api, accounts, reload, onNotice }: { api: ApiClient; accounts: Account[]; reload: () => Promise<void>; onNotice: (notice: { kind: "success" | "error"; text: string }) => void }) {
+function AccountsPage({ api, accounts, reload, reorder, onNotice }: { api: ApiClient; accounts: Account[]; reload: () => Promise<void>; reorder: (accountIds: string[]) => Promise<void>; onNotice: (notice: { kind: "success" | "error"; text: string }) => void }) {
   const [editing, setEditing] = useState<Account | "new" | null>(null);
   const [deleting, setDeleting] = useState<Account | null>(null);
   const [localSyncing, setLocalSyncing] = useState<Set<string>>(new Set());
   const [pollIntervalSeconds, setPollIntervalSeconds] = useState(10);
+  const [draggingId, setDraggingId] = useState<string | null>(null);
+  const [dropTargetId, setDropTargetId] = useState<string | null>(null);
+  const [reordering, setReordering] = useState(false);
+  const [now, setNow] = useState(Date.now());
 
   useEffect(() => { void api.request<Settings>("/settings").then((value) => setPollIntervalSeconds(value.pollIntervalSeconds)); }, [api]);
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 60_000);
+    return () => window.clearInterval(timer);
+  }, []);
 
   const sync = async (account: Account) => {
     setLocalSyncing((set) => new Set(set).add(account.id));
@@ -241,17 +324,64 @@ function AccountsPage({ api, accounts, reload, onNotice }: { api: ApiClient; acc
     catch (error) { onNotice({ kind: "error", text: error instanceof Error ? error.message : "删除失败" }); }
   };
 
+  const orderedIds = (sourceId: string, targetId: string): string[] | null => {
+    const ids = accounts.map((account) => account.id);
+    const sourceIndex = ids.indexOf(sourceId); const targetIndex = ids.indexOf(targetId);
+    if (sourceIndex < 0 || targetIndex < 0 || sourceIndex === targetIndex) return null;
+    ids.splice(targetIndex, 0, ids.splice(sourceIndex, 1)[0]!);
+    return ids;
+  };
+
+  const persistOrder = async (accountIds: string[]) => {
+    setReordering(true);
+    try { await reorder(accountIds); onNotice({ kind: "success", text: "账号顺序已保存" }); }
+    catch (error) { onNotice({ kind: "error", text: error instanceof Error ? error.message : "账号排序失败" }); }
+    finally { setReordering(false); setDraggingId(null); setDropTargetId(null); }
+  };
+
+  const moveByKeyboard = (accountId: string, offset: -1 | 1) => {
+    const index = accounts.findIndex((account) => account.id === accountId);
+    const target = accounts[index + offset];
+    if (!target || reordering) return;
+    const next = orderedIds(accountId, target.id);
+    if (next) void persistOrder(next);
+  };
+
+  const startDragging = (event: ReactDragEvent<HTMLElement>, accountId: string) => {
+    setDraggingId(accountId); setDropTargetId(null);
+    event.dataTransfer.effectAllowed = "move";
+    event.dataTransfer.setData("text/plain", accountId);
+  };
+
+  const dropAccount = (event: ReactDragEvent<HTMLElement>, targetId: string) => {
+    event.preventDefault();
+    const sourceId = draggingId ?? event.dataTransfer.getData("text/plain");
+    const next = orderedIds(sourceId, targetId);
+    if (next) void persistOrder(next);
+    else { setDraggingId(null); setDropTargetId(null); }
+  };
+
   return (
     <section className={styles.section}>
       <div className={styles.sectionToolbar}><div><h2>已连接账号</h2><p>{accounts.length} 个邮箱</p></div><Button variant="primary" onClick={() => setEditing("new")}><Plus size={16} />添加邮箱</Button></div>
       {accounts.length === 0 ? <EmptyState icon={<Cloud size={28} />} title="还没有邮箱账号" action={<Button variant="primary" onClick={() => setEditing("new")}><Plus size={16} />添加邮箱</Button>} /> :
-        <div className={styles.accountList}>
+        <div className={`list ${styles.accountList}`}>
           {accounts.map((account) => {
             const syncing = localSyncing.has(account.id) || account.status === "connecting";
-            return <article key={account.id} className={`${styles.accountRow} ${syncing ? styles.syncing : ""}`}>
-              <div className={styles.accountIdentity}><span className={styles.mailAvatar}><Mail size={18} /></span><div><strong>{account.email}</strong><span>{account.aliases.length} 个别名 · {PROVIDERS.find((provider) => provider.value === account.provider)?.label ?? account.provider} · {account.imap.host}</span><span>{account.syncMode === "idle" ? "IDLE 实时" : account.syncMode === "polling" ? `每 ${pollIntervalSeconds} 秒轮询` : "正在检测同步模式"}</span></div></div>
-              <Status status={syncing ? "connecting" : account.status} />
-              <div className={styles.accountTime}><span>最近同步</span><strong>{formatDate(account.lastSyncedAt, true)}</strong>{account.lastError && <small title={account.lastError}>{account.lastError}</small>}</div>
+            const providerLabel = PROVIDERS.find((provider) => provider.value === account.provider)?.label ?? account.provider;
+            const syncModeLabel = account.syncMode === "idle" ? "IDLE 实时" : account.syncMode === "polling" ? `每 ${pollIntervalSeconds} 秒轮询` : "正在检测同步模式";
+            return <article key={account.id} onDragOver={(event) => { if (draggingId && draggingId !== account.id) { event.preventDefault(); event.dataTransfer.dropEffect = "move"; setDropTargetId(account.id); } }} onDrop={(event) => dropAccount(event, account.id)} className={`list-row ${styles.accountRow} ${syncing ? styles.syncing : ""} ${draggingId === account.id ? styles.accountRowDragging : ""} ${dropTargetId === account.id ? styles.accountRowDropTarget : ""}`}>
+              <span className={styles.dragHandle} draggable={accounts.length > 1 && !reordering} onDragStart={(event) => startDragging(event, account.id)} onDragEnd={() => { setDraggingId(null); setDropTargetId(null); }}>
+                <IconButton label={`拖动排序 ${account.email}`} disabled={reordering || accounts.length < 2} onKeyDown={(event) => { if (event.key === "ArrowUp" || event.key === "ArrowDown") { event.preventDefault(); moveByKeyboard(account.id, event.key === "ArrowUp" ? -1 : 1); } }}><GripVertical size={17} /></IconButton>
+              </span>
+              <div className={styles.accountOverview}>
+                <div className={styles.accountIdentity}><span className={styles.mailAvatar}><Mail size={18} /></span><div><strong>{account.email}</strong><span>{providerLabel} · {account.imap.host} · {account.aliases.length} 个别名</span></div></div>
+                <div className={styles.accountHealth}>
+                  <div className={styles.accountConnection}><Status status={syncing ? "connecting" : account.status} /><small>{syncModeLabel}</small></div>
+                  <div className={styles.accountMetric}><span>本地缓存</span><strong>{account.messageCount ?? 0} 封 · {account.unreadCount ?? 0} 未读</strong></div>
+                  <div className={styles.accountTime}><span>最近同步</span><time dateTime={account.lastSyncedAt ?? undefined} title={formatDate(account.lastSyncedAt)}>{account.lastSyncedAt ? formatRelativeDate(account.lastSyncedAt, now) : "尚未同步"}</time>{account.lastError && <small title={account.lastError}>{account.lastError}</small>}</div>
+                </div>
+              </div>
               <div className={styles.rowActions}>
                 <IconButton label="测试连接" onClick={() => void test(account)}><ShieldCheck size={17} /></IconButton>
                 <IconButton label="立即同步" disabled={syncing} onClick={() => void sync(account)}><RefreshCw className={syncing ? styles.rotating : ""} size={17} /></IconButton>
@@ -271,7 +401,8 @@ function AccountsPage({ api, accounts, reload, onNotice }: { api: ApiClient; acc
 function Status({ status }: { status: Account["status"] }) {
   const labels = { pending: "等待连接", connecting: "同步中", connected: "已连接", warning: "有警告", error: "连接错误" };
   const Icon = status === "connected" ? CircleCheck : status === "warning" || status === "error" ? CircleAlert : RefreshCw;
-  return <span className={`${styles.status} ${styles[`status_${status}`]}`}><Icon size={14} className={status === "connecting" ? styles.rotating : ""} />{labels[status]}</span>;
+  const color = status === "connected" ? "badge-success" : status === "warning" ? "badge-warning" : status === "error" ? "badge-error" : "badge-neutral";
+  return <span className={`badge badge-soft badge-sm ${color} ${styles.status} ${styles[`status_${status}`]}`}><Icon size={14} className={status === "connecting" ? styles.rotating : ""} />{labels[status]}</span>;
 }
 
 function AccountDialog({ open, account, api, onOpenChange, onSaved }: { open: boolean; account: Account | null; api: ApiClient; onOpenChange: (open: boolean) => void; onSaved: (message: string) => void }) {
@@ -326,14 +457,15 @@ function AccountDialog({ open, account, api, onOpenChange, onSaved }: { open: bo
   return <Dialog.Root open={open} onOpenChange={onOpenChange}><Dialog.Portal><Dialog.Overlay className={styles.overlay} /><Dialog.Content className={styles.dialog}>
     <div className={styles.dialogHeader}><div><Dialog.Title>{account ? "编辑邮箱" : "添加邮箱"}</Dialog.Title><Dialog.Description>{account ? "留空密码将保留现有授权码" : "使用邮箱密码或服务商授权码连接"}</Dialog.Description></div><Dialog.Close asChild><IconButton label="关闭"><X size={18} /></IconButton></Dialog.Close></div>
     <form className={styles.accountForm} onSubmit={submit}>
-      <div className={styles.field}><label htmlFor="account-email">邮箱地址</label><input id="account-email" type="email" value={email} onChange={(event) => setEmail(event.target.value)} required autoFocus /></div>
-      <div className={styles.field}><label htmlFor="account-alias">别名邮箱</label><div className={styles.aliasInput}><input id="account-alias" type="email" value={aliasInput} onChange={(event) => setAliasInput(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === ",") { event.preventDefault(); addAliases(); } }} placeholder="alias@example.com" /><IconButton type="button" label="添加别名" onClick={() => addAliases()}><Plus size={17} /></IconButton></div>{aliases.length > 0 && <div className={styles.aliasList}>{aliases.map((alias) => <span key={alias}>{alias}<button type="button" aria-label={`移除别名 ${alias}`} onClick={() => setAliases((values) => values.filter((value) => value !== alias))}><X size={14} /></button></span>)}</div>}</div>
-      <div className={styles.field}><label htmlFor="account-password">密码 / 授权码</label><input id="account-password" type="password" value={password} onChange={(event) => setPassword(event.target.value)} required={!account} autoComplete="new-password" placeholder={account ? "留空表示不修改" : "请输入授权码"} /></div>
-      <div className={styles.field}><label htmlFor="account-provider">邮箱服务商</label><select id="account-provider" value={provider} onChange={(event) => { const value = event.target.value as ProviderId; setProvider(value); if (value === "custom") setAdvanced(true); }}>{PROVIDERS.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select></div>
+      <div className={`fieldset ${styles.field}`}><label className="fieldset-legend" htmlFor="account-email">邮箱地址</label><input className="input input-sm" id="account-email" type="email" value={email} onChange={(event) => setEmail(event.target.value)} required autoFocus /></div>
+      <div className={`fieldset ${styles.field}`}><label className="fieldset-legend" htmlFor="account-alias">别名邮箱</label><div className={styles.aliasInput}><input className="input input-sm" id="account-alias" type="email" value={aliasInput} onChange={(event) => setAliasInput(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === ",") { event.preventDefault(); addAliases(); } }} placeholder="alias@example.com" /><IconButton type="button" label="添加别名" onClick={() => addAliases()}><Plus size={17} /></IconButton></div>{aliases.length > 0 && <div className={styles.aliasList}>{aliases.map((alias) => <span className="badge badge-ghost badge-sm" key={alias}>{alias}<button type="button" aria-label={`移除别名 ${alias}`} onClick={() => setAliases((values) => values.filter((value) => value !== alias))}><X size={14} /></button></span>)}</div>}</div>
+      <div className={`fieldset ${styles.field}`}><label className="fieldset-legend" htmlFor="account-password">密码 / 授权码</label><input className="input input-sm" id="account-password" type="password" value={password} onChange={(event) => setPassword(event.target.value)} required={!account} autoComplete="new-password" placeholder={account ? "留空表示不修改" : "请输入授权码"} /></div>
+      <div className={`fieldset ${styles.field}`}><label className="fieldset-legend" htmlFor="account-provider">邮箱服务商</label><select className="select select-sm" id="account-provider" value={provider} onChange={(event) => { const value = event.target.value as ProviderId; setProvider(value); if (value === "custom") setAdvanced(true); }}>{PROVIDERS.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select></div>
       <button type="button" className={styles.disclosure} onClick={() => setAdvanced((value) => !value)} aria-expanded={advanced}><SlidersHorizontal size={16} />高级 IMAP 配置<span>{advanced ? "收起" : "展开"}</span></button>
       {advanced && <motion.div className={styles.advancedFields} initial={{ opacity: 0, y: -4 }} animate={{ opacity: 1, y: 0 }}>
-        <div className={styles.fieldWide}><div className={styles.field}><label htmlFor="imap-host">主机</label><input id="imap-host" value={host} onChange={(event) => setHost(event.target.value)} placeholder="imap.example.com" required={provider === "custom"} /></div><div className={styles.field}><label htmlFor="imap-port">端口</label><input id="imap-port" type="number" min="1" max="65535" value={port} onChange={(event) => setPort(event.target.value)} /></div></div>
-        <label className={styles.checkbox}><input type="checkbox" checked={secure} onChange={(event) => setSecure(event.target.checked)} /><span><Check size={13} /></span>使用 TLS 加密连接</label>
+        <div className={`fieldset ${styles.field}`}><label className="fieldset-legend" htmlFor="imap-host">主机</label><input className="input input-sm" id="imap-host" value={host} onChange={(event) => setHost(event.target.value)} placeholder="imap.example.com" required={provider === "custom"} /></div>
+        <div className={`fieldset ${styles.field}`}><label className="fieldset-legend" htmlFor="imap-port">端口</label><input className="input input-sm" id="imap-port" type="number" min="1" max="65535" value={port} onChange={(event) => setPort(event.target.value)} /></div>
+        <label className={styles.checkbox}><span>SSL</span><input className="toggle toggle-sm" type="checkbox" checked={secure} onChange={(event) => setSecure(event.target.checked)} /></label>
       </motion.div>}
       {error && <p className={styles.formError} role="alert"><CircleAlert size={15} />{error}</p>}
       <div className={styles.dialogFooter}><Dialog.Close asChild><Button type="button">取消</Button></Dialog.Close><Button variant="primary" disabled={busy}>{busy ? <Spinner label="正在保存" /> : "保存账号"}</Button></div>
@@ -341,13 +473,16 @@ function AccountDialog({ open, account, api, onOpenChange, onSaved }: { open: bo
   </Dialog.Content></Dialog.Portal></Dialog.Root>;
 }
 
-function MessagesPage({ api, accounts, revision, onNotice }: { api: ApiClient; accounts: Account[]; revision: number; onNotice: (notice: { kind: "success" | "error"; text: string }) => void }) {
-  const [accountId, setAccountId] = useState(""); const [view, setView] = useState<MessageView>("all");
+function MessagesPage({ api, accounts, accountId, onAccountChange, revision, onNotice }: { api: ApiClient; accounts: Account[]; accountId: string; onAccountChange: (accountId: string) => void; revision: number; onNotice: (notice: { kind: "success" | "error"; text: string }) => void }) {
+  const [view, setView] = useState<MessageView>("all");
   const [items, setItems] = useState<MessageSummary[]>([]); const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState<string | null>(null); const [detail, setDetail] = useState<MessageDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false); const [cursor, setCursor] = useState<string | null>(null);
   const [nextCursor, setNextCursor] = useState<string | null>(null); const [history, setHistory] = useState<Array<string | null>>([]);
   const [confirmAll, setConfirmAll] = useState(false);
+  const [listWidth, setListWidth] = useState(380);
+  const [now, setNow] = useState(Date.now());
+  const workspaceRef = useRef<HTMLElement | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -360,6 +495,10 @@ function MessagesPage({ api, accounts, revision, onNotice }: { api: ApiClient; a
 
   useEffect(() => { void load(); }, [load]);
   useEffect(() => { setCursor(null); setHistory([]); setSelected(null); setDetail(null); }, [accountId, view]);
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, []);
 
   const openMessage = async (message: MessageSummary) => {
     setSelected(message.id); setDetailLoading(true);
@@ -382,22 +521,22 @@ function MessagesPage({ api, accounts, revision, onNotice }: { api: ApiClient; a
     } catch (error) { onNotice({ kind: "error", text: error instanceof Error ? error.message : "全部已读失败" }); }
   };
 
-  return <section className={styles.mailWorkspace}>
+  return <section ref={workspaceRef} className={styles.mailWorkspace} style={{ "--mail-list-width": `${listWidth}px` } as CSSProperties}>
     <div className={`${styles.mailListPane} ${selected ? styles.mobileHidden : ""}`}>
       <div className={styles.mailControls}>
-        <select aria-label="筛选邮箱账号" value={accountId} onChange={(event) => setAccountId(event.target.value)}><option value="">全部账号</option>{accounts.map((account) => <option key={account.id} value={account.id}>{account.email}</option>)}</select>
-        <div className={styles.segmented} aria-label="邮件视图">{(["all", "unread", "junk"] as const).map((item) => <button key={item} className={view === item ? styles.segmentActive : ""} onClick={() => setView(item)}>{item === "all" ? "全部" : item === "unread" ? "未读" : "垃圾箱"}</button>)}</div>
+        <select className={`select select-sm ${styles.mobileAccountSelect}`} aria-label="筛选邮箱账号" value={accountId} onChange={(event) => onAccountChange(event.target.value)}><option value="">聚合收件箱</option>{accounts.map((account) => <option key={account.id} value={account.id}>{account.email}</option>)}</select>
+        <div className={`join ${styles.viewGroup}`} role="tablist" aria-label="邮件视图">{(["all", "unread", "junk"] as const).map((item) => <button key={item} role="tab" aria-selected={view === item} className={`join-item btn btn-sm ${styles.viewButton} ${view === item ? `btn-primary btn-active ${styles.viewButtonActive}` : ""}`} onClick={() => setView(item)}>{item === "all" ? "全部" : item === "unread" ? "未读" : "垃圾箱"}</button>)}</div>
         <IconButton label="全部已读" disabled={!accountId || !items.some((item) => !item.read)} onClick={() => setConfirmAll(true)}><MailCheck size={17} /></IconButton>
       </div>
       <div className={styles.messageList} aria-busy={loading}>
-        {loading ? <div className={styles.centerState}><Spinner /></div> : items.length === 0 ? <EmptyState icon={<SearchX size={27} />} title="没有符合条件的邮件" /> : items.map((message) => <button key={message.id} className={`${styles.messageRow} ${selected === message.id ? styles.messageSelected : ""} ${message.read ? styles.messageRead : ""}`} onClick={() => void openMessage(message)}>
+        {loading ? <div className={styles.centerState}><Spinner /></div> : items.length === 0 ? <EmptyState icon={<SearchX size={27} />} title="没有符合条件的邮件" /> : items.map((message) => <button key={message.id} className={`list-row ${styles.messageRow} ${selected === message.id ? styles.messageSelected : ""} ${message.read ? styles.messageRead : ""}`} onClick={() => void openMessage(message)}>
           <span className={styles.unreadDot} aria-label={message.read ? "已读" : "未读"} />
-          <span className={styles.messageMain}><span className={styles.messageMeta}><strong>{senderLabel(message)}</strong><time>{formatDate(message.displayTime, true)}</time></span><span className={styles.messageSubject}>{message.subject}</span>{message.labels.length > 0 && <MessageLabels labels={message.labels} compact />}<span className={styles.messagePreview}>{message.preview || "无正文预览"}</span></span>
-          <span className={styles.messageFlags}>{message.folder === "junk" && <Archive size={14} aria-label="垃圾箱" />}{message.hasAttachments && <Paperclip size={14} aria-label="包含附件" />}</span>
+          <span className={styles.messageMain}><span className={styles.messageMeta}><strong>{senderLabel(message)}</strong><span className={styles.messageMetaRight}><span className={styles.messageSignals}>{message.labels.length > 0 && <MessageLabels labels={message.labels} compact />}{message.hasAttachments && <Paperclip size={14} aria-label="包含附件" />}{message.folder === "junk" && <Archive size={14} aria-label="垃圾箱" />}</span><time dateTime={message.displayTime} title={formatDate(message.displayTime)}>{formatRelativeDate(message.displayTime, now)}</time></span></span><span className={styles.messageSubject}>{message.subject}</span><span className={styles.messagePreview}>{message.preview || "无正文预览"}</span></span>
         </button>)}
       </div>
       <div className={styles.pagination}><Button variant="quiet" disabled={!history.length} onClick={() => { const previous = [...history]; const value = previous.pop() ?? null; setHistory(previous); setCursor(value); }}><ChevronLeft size={16} />上一页</Button><span>每页 50 封</span><Button variant="quiet" disabled={!nextCursor} onClick={() => { setHistory((values) => [...values, cursor]); setCursor(nextCursor); }} >下一页<ChevronRight size={16} /></Button></div>
     </div>
+    <ResizeHandle value={listWidth} min={320} max={() => Math.max(320, (workspaceRef.current?.clientWidth ?? window.innerWidth) - 360)} label="调整邮件列表宽度" onChange={setListWidth} />
     <div className={`${styles.detailPane} ${selected ? styles.detailVisible : ""}`}>
       {detailLoading ? <div className={styles.centerState}><Spinner label="正在读取邮件" /></div> : detail ? <MessageDetailView message={detail} onBack={() => { setSelected(null); setDetail(null); }} onMark={(read) => void mark(detail, read)} /> : <EmptyState icon={<FileText size={28} />} title="选择一封邮件查看内容" />}
     </div>
@@ -442,8 +581,23 @@ export function MessageDetailView({ message, onBack, onMark }: { message: Messag
   const unsubscribeUrl = safeHttpLinkUrl(message.unsubscribeUrl ?? "");
   const unsubscribeHost = unsubscribeUrl ? new URL(unsubscribeUrl).host : "";
   return <article className={styles.messageDetail}>
-    <div className={styles.detailToolbar}><IconButton label="返回邮件列表" className={styles.backButton} onClick={onBack}><ArrowLeft size={18} /></IconButton><span className={styles.detailFolder}>{message.folder === "junk" ? "垃圾箱" : "收件箱"}</span>{hasRemoteImages && <Button type="button" variant="quiet" className={styles.remoteImageButton} disabled={remoteImagesLoaded} onClick={() => setRemoteImagesForMessage(message.id)}>{remoteImagesLoaded ? <Check size={15} /> : <ImageIcon size={15} />}{remoteImagesLoaded ? "已加载" : "加载图片"}</Button>}<IconButton label={message.read ? "标记为未读" : "标记为已读"} onClick={() => onMark(!message.read)}>{message.read ? <Mail size={17} /> : <MailCheck size={17} />}</IconButton></div>
-    {(message.labels.length > 0 || message.verificationCode || unsubscribeUrl) && <div className={styles.detailActions}><MessageLabels labels={message.labels} />{message.verificationCode && <Button type="button" variant="quiet" onClick={() => void copyVerificationCode()}><Copy size={15} />{copyState === "copied" ? "已复制" : copyState === "error" ? "复制失败" : `复制 ${message.verificationCode}`}</Button>}{unsubscribeUrl && <Button type="button" variant="quiet" onClick={() => setUnsubscribePending(true)}><ExternalLink size={15} />快速退订</Button>}<span className={styles.srOnly} role="status" aria-live="polite">{copyState === "copied" ? "验证码已复制" : copyState === "error" ? "验证码复制失败" : ""}</span></div>}
+    <div className={styles.detailToolbar}>
+      <IconButton label="返回邮件列表" className={`${styles.backButton} ${styles.detailIconAction}`} onClick={onBack}><ArrowLeft size={17} /></IconButton>
+      {(message.folder === "junk" || message.labels.length > 0) && <div className={styles.detailContext}>
+        {message.folder === "junk" && <span className={`badge badge-soft badge-sm ${styles.junkLabel}`}>垃圾箱</span>}
+        {message.labels.length > 0 && <MessageLabels labels={message.labels} toolbar />}
+      </div>}
+      {(message.verificationCode || unsubscribeUrl) && <div className={styles.detailActions}>
+        {message.verificationCode && <Button type="button" variant="quiet" className={styles.detailAction} aria-label={`复制 ${message.verificationCode}`} onClick={() => void copyVerificationCode()}><Copy size={14} /><span className={styles.detailActionText}>{copyState === "copied" ? "已复制" : copyState === "error" ? "复制失败" : `复制 ${message.verificationCode}`}</span></Button>}
+        {unsubscribeUrl && <Button type="button" variant="quiet" className={styles.detailAction} aria-label="快速退订" onClick={() => setUnsubscribePending(true)}><ExternalLink size={14} /><span className={styles.detailActionText}>快速退订</span></Button>}
+      </div>}
+      <span className={styles.toolbarSpacer} />
+      <div className={styles.detailUtilities}>
+        {hasRemoteImages && <Button type="button" variant="quiet" className={`${styles.detailAction} ${styles.remoteImageButton}`} aria-label={remoteImagesLoaded ? "图片已加载" : "加载图片"} disabled={remoteImagesLoaded} onClick={() => setRemoteImagesForMessage(message.id)}>{remoteImagesLoaded ? <Check size={14} /> : <ImageIcon size={14} />}<span className={styles.detailActionText}>{remoteImagesLoaded ? "已加载" : "加载图片"}</span></Button>}
+        <IconButton label={message.read ? "标记为未读" : "标记为已读"} className={styles.detailIconAction} onClick={() => onMark(!message.read)}>{message.read ? <Mail size={16} /> : <MailCheck size={16} />}</IconButton>
+      </div>
+      <span className={styles.srOnly} role="status" aria-live="polite">{copyState === "copied" ? "验证码已复制" : copyState === "error" ? "验证码复制失败" : ""}</span>
+    </div>
     <header className={styles.detailHeader}><h2>{message.subject}</h2><time>{formatDate(message.displayTime)}</time><dl><div><dt>发件人</dt><dd>{addressList(message.from)}</dd></div><div><dt>收件人</dt><dd>{addressList(message.to)}</dd></div>{message.cc.length > 0 && <div><dt>抄送</dt><dd>{addressList(message.cc)}</dd></div>}{message.attachments.length > 0 && <div><dt>附件</dt><dd className={styles.attachments}>{message.attachments.map((name) => <span key={name}><Paperclip size={13} />{name}</span>)}</dd></div>}</dl></header>
     <div className={styles.bodyDivider} />
     {message.html ? <iframe title="邮件正文" sandbox="allow-same-origin" className={styles.mailBodyFrame} srcDoc={srcDoc} onLoad={(event) => handleFrameLoad(event.currentTarget)} /> : <pre className={styles.textBody}>{message.text || "（无正文）"}</pre>}
@@ -452,12 +606,12 @@ export function MessageDetailView({ message, onBack, onMark }: { message: Messag
   </article>;
 }
 
-function MessageLabels({ labels, compact = false }: { labels: MessageLabel[]; compact?: boolean }) {
-  return <span className={`${styles.messageLabels} ${compact ? styles.messageLabelsCompact : ""}`}>{labels.map((label) => {
+function MessageLabels({ labels, compact = false, toolbar = false }: { labels: MessageLabel[]; compact?: boolean; toolbar?: boolean }) {
+  return <span className={`${styles.messageLabels} ${compact ? styles.messageLabelsCompact : ""} ${toolbar ? styles.toolbarLabels : ""}`}>{labels.map((label) => {
     const item = MESSAGE_LABELS[label];
     if (!item) return null;
     const Icon = item.icon;
-    return <span key={label} data-label={label}><Icon size={compact ? 11 : 13} />{item.text}</span>;
+    return <span className={`badge badge-soft ${compact ? "badge-xs" : "badge-sm"}`} key={label} data-label={label}><Icon size={compact ? 11 : 13} />{item.text}</span>;
   })}</span>;
 }
 
@@ -526,9 +680,9 @@ function SettingsPage({ api, onNotice }: { api: ApiClient; onNotice: (notice: { 
   const save = async (event: FormEvent) => { event.preventDefault(); setBusy(true); try { const result = await api.request<Settings>("/settings", { method: "PATCH", body: JSON.stringify({ maxMessagesPerAccount: Number(value), pollIntervalSeconds: Number(interval) }) }); setSettings(result); onNotice({ kind: "success", text: "系统设置已保存" }); } catch (error) { onNotice({ kind: "error", text: error instanceof Error ? error.message : "保存失败" }); } finally { setBusy(false); } };
   if (!settings) return <div className={styles.centerState}><Spinner /></div>;
   const unchanged = Number(value) === settings.maxMessagesPerAccount && Number(interval) === settings.pollIntervalSeconds;
-  return <section className={styles.settingsSection}><div className={styles.sectionToolbar}><div><h2>同步与缓存</h2><p>全局邮件策略</p></div></div><form className={styles.settingsForm} onSubmit={save}><div><label htmlFor="max-messages">每个账号最多保留</label><div className={styles.numberControl}><input id="max-messages" type="number" min="1" max="10000" value={value} onChange={(event) => setValue(event.target.value)} /><span>封邮件</span></div><p>收件箱和垃圾箱合计计算，超出后删除最旧的本地缓存。</p></div><div><label htmlFor="poll-interval">无 IDLE 时轮询间隔</label><div className={styles.numberControl}><input id="poll-interval" type="number" min="5" max="3600" value={interval} onChange={(event) => setIntervalValue(event.target.value)} /><span>秒</span></div><p>支持 IDLE 的邮箱保持实时长连接，此设置只用于不支持 IDLE 的服务器。</p></div><Button variant="primary" disabled={busy || unchanged}>{busy ? <Spinner label="正在保存" /> : "保存设置"}</Button></form></section>;
+  return <section className={styles.settingsSection}><div className={styles.sectionToolbar}><div><h2>同步与缓存</h2><p>全局邮件策略</p></div></div><form className={styles.settingsForm} onSubmit={save}><div className={`fieldset ${styles.settingsField}`}><label className="fieldset-legend" htmlFor="max-messages">每个账号最多保留</label><div className={styles.numberControl}><input className="input input-sm" id="max-messages" type="number" min="1" max="10000" value={value} onChange={(event) => setValue(event.target.value)} /><span>封邮件</span></div><p>收件箱和垃圾箱合计计算，超出后删除最旧的本地缓存。</p></div><div className={`fieldset ${styles.settingsField}`}><label className="fieldset-legend" htmlFor="poll-interval">无 IDLE 时轮询间隔</label><div className={styles.numberControl}><input className="input input-sm" id="poll-interval" type="number" min="5" max="3600" value={interval} onChange={(event) => setIntervalValue(event.target.value)} /><span>秒</span></div><p>支持 IDLE 的邮箱保持实时长连接，此设置只用于不支持 IDLE 的服务器。</p></div><Button variant="primary" disabled={busy || unchanged}>{busy ? <Spinner label="正在保存" /> : "保存设置"}</Button></form></section>;
 }
 
 function ConfirmDialog({ open, title, description, descriptionClassName, confirmLabel, danger = false, onOpenChange, onConfirm }: { open: boolean; title: string; description: string; descriptionClassName?: string; confirmLabel: string; danger?: boolean; onOpenChange: (open: boolean) => void; onConfirm: () => void }) {
-  return <AlertDialog.Root open={open} onOpenChange={onOpenChange}><AlertDialog.Portal><AlertDialog.Overlay className={styles.overlay} /><AlertDialog.Content className={styles.confirmDialog}><AlertDialog.Title>{title}</AlertDialog.Title><AlertDialog.Description className={descriptionClassName}>{description}</AlertDialog.Description><div className={styles.dialogFooter}><AlertDialog.Cancel asChild><Button>取消</Button></AlertDialog.Cancel><AlertDialog.Action asChild><Button variant={danger ? "danger" : "primary"} onClick={onConfirm}>{confirmLabel}</Button></AlertDialog.Action></div></AlertDialog.Content></AlertDialog.Portal></AlertDialog.Root>;
+  return <AlertDialog.Root open={open} onOpenChange={onOpenChange}><AlertDialog.Portal><AlertDialog.Overlay className={styles.overlay} /><AlertDialog.Content className={styles.confirmDialog}><AlertDialog.Title>{title}</AlertDialog.Title><AlertDialog.Description className={descriptionClassName}>{description}</AlertDialog.Description><div className={`modal-action ${styles.dialogFooter}`}><AlertDialog.Cancel asChild><Button>取消</Button></AlertDialog.Cancel><AlertDialog.Action asChild><Button variant={danger ? "danger" : "primary"} onClick={onConfirm}>{confirmLabel}</Button></AlertDialog.Action></div></AlertDialog.Content></AlertDialog.Portal></AlertDialog.Root>;
 }

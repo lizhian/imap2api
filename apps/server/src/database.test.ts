@@ -51,6 +51,40 @@ describe("AppDatabase", () => {
     expect(bytes).not.toContain("private.example");
   });
 
+  it("returns the cached and unread message counts for each account", () => {
+    const { db } = database();
+    const account = db.createAccount({ email: "counts@gmail.com", password: "secret" });
+    for (const [uid, read] of [[1, false], [2, false], [3, true]] as const) {
+      db.upsertMessage({
+        accountId: account.id, folder: uid === 2 ? "junk" : "inbox", mailboxPath: "INBOX",
+        uid, uidValidity: "1", read, displayTime: `2026-01-0${uid}T00:00:00.000Z`,
+        content: { subject: `message-${uid}`, from: [], to: [], cc: [], preview: "", text: "", html: null, attachments: [] }
+      });
+    }
+
+    expect(db.listAccounts()[0]).toMatchObject({ messageCount: 3, unreadCount: 2 });
+    db.updateKnownRead(db.listMessages({ accountId: account.id, view: "unread", limit: 50 }).items[0]!.id, true);
+    expect(db.listAccounts()[0]).toMatchObject({ messageCount: 3, unreadCount: 1 });
+    expect(db.updateAccount(account.id, { aliases: ["alias@gmail.com"] })).toMatchObject({ messageCount: 3, unreadCount: 1 });
+    db.close();
+  });
+
+  it("persists an explicit account order and appends new accounts", () => {
+    const { db } = database();
+    const first = db.createAccount({ email: "first@gmail.com", password: "secret" });
+    const second = db.createAccount({ email: "second@gmail.com", password: "secret" });
+    const third = db.createAccount({ email: "third@gmail.com", password: "secret" });
+
+    expect(db.listAccounts().map((account) => account.id)).toEqual([first.id, second.id, third.id]);
+    db.reorderAccounts([third.id, first.id, second.id]);
+    expect(db.listAccounts().map((account) => account.id)).toEqual([third.id, first.id, second.id]);
+    expect(() => db.reorderAccounts([third.id, first.id])).toThrow("账号排序数据无效");
+
+    const fourth = db.createAccount({ email: "fourth@gmail.com", password: "secret" });
+    expect(db.listAccounts().map((account) => account.id)).toEqual([third.id, first.id, second.id, fourth.id]);
+    db.close();
+  });
+
   it("reclassifies cached messages after aliases change", () => {
     const { db } = database();
     const account = db.createAccount({ email: "main@gmail.com", password: "secret" });
@@ -89,11 +123,11 @@ describe("AppDatabase", () => {
     db.raw.prepare("UPDATE accounts SET config_enc = ? WHERE id = ?")
       .run(db.crypto.encrypt({ email: stored.email, imap: stored.imap }), account.id);
     expect(db.listAccounts()[0]!.aliases).toEqual([]);
-    db.raw.exec("ALTER TABLE settings DROP COLUMN poll_interval_seconds; ALTER TABLE accounts DROP COLUMN sync_mode; PRAGMA user_version = 1;");
+    db.raw.exec("ALTER TABLE settings DROP COLUMN poll_interval_seconds; ALTER TABLE accounts DROP COLUMN sync_mode; ALTER TABLE accounts DROP COLUMN sort_order; PRAGMA user_version = 1;");
     db.close();
 
     const migrated = new AppDatabase(path, "t".repeat(32));
-    expect(migrated.raw.pragma("user_version", { simple: true })).toBe(2);
+    expect(migrated.raw.pragma("user_version", { simple: true })).toBe(3);
     expect(migrated.getSettings()).toEqual({ maxMessagesPerAccount: 100, pollIntervalSeconds: 10 });
     expect(migrated.listAccounts()[0]).toMatchObject({ email: "migration@qq.com", syncMode: null });
     migrated.close();
