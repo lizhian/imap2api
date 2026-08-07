@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { ImapFlow } from "imapflow";
 import { AppDatabase } from "./database.js";
 import { EventBroker } from "./events.js";
+import { FORWARDING_HEADER_FIELDS } from "./mail-classifier.js";
 import { cleanHtml, MailboxSynchronizer } from "./mail-sync.js";
 
 const dirs: string[] = [];
@@ -62,12 +63,18 @@ describe("mail HTML sanitization", () => {
     const account = db.getAccount(publicAccount.id)!;
     const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
     const requestedParts: string[] = [];
+    let requestedHeaders: string[] | undefined;
     let failBodyFetch = false;
     const client = {
       mailbox: { uidValidity: 1n, exists: 1 },
       getMailboxLock: async () => ({ release: () => undefined }),
-      fetchAll: async () => [{
-        uid: 1, flags: new Set<string>(), envelope: { subject: "Styled", date: new Date("2026-01-01T00:00:00Z") },
+      fetchAll: async (_range: string, query: { headers?: string[] }) => {
+        requestedHeaders = query.headers;
+        return [{
+        uid: 1, flags: new Set<string>(), envelope: {
+          subject: "Styled", to: [{ address: "source@domain-a.test" }], date: new Date("2026-01-01T00:00:00Z")
+        },
+        headers: Buffer.from("Delivered-To: mail@qq.com\r\nDelivered-To: relay@domain-b.test\r\nTo: source@domain-a.test\r\n"),
         internalDate: new Date("2026-01-01T00:00:00Z"),
         bodyStructure: { type: "multipart/related", childNodes: [
           { part: "1", type: "text/html", encoding: "7bit", parameters: { charset: "utf-8" } },
@@ -75,7 +82,8 @@ describe("mail HTML sanitization", () => {
           { part: "3", type: "image/svg+xml", encoding: "base64", id: "<unsafe@example.test>", size: 100, disposition: "inline" },
           { part: "4", type: "image/png", encoding: "base64", id: "<large@example.test>", size: 3 * 1024 * 1024, disposition: "inline" }
         ] }
-      }],
+      }];
+      },
       fetchOne: async (_uid: number, query: { bodyParts: string[] }) => {
         requestedParts.push(...query.bodyParts);
         if (failBodyFetch) throw new Error("body fetch failed");
@@ -94,6 +102,7 @@ describe("mail HTML sanitization", () => {
 
     const summary = db.listMessages({ accountId: account.id, view: "all", limit: 50 }).items[0]!;
     const detail = db.getMessage(summary.id)!;
+    expect(requestedHeaders).toEqual([...FORWARDING_HEADER_FIELDS]);
     expect(requestedParts).toEqual(["1", "2"]);
     expect(detail.html).toContain("data:image/png;base64,");
     expect(detail.html).toContain('data-remote-src="https://images.example.test/a.png"');
@@ -101,6 +110,7 @@ describe("mail HTML sanitization", () => {
     expect(detail.html).toContain("<style>.logo{width:32px}</style>");
     expect(detail.html).not.toMatch(/unsafe@example\.test|large@example\.test/);
     expect(detail.labels).toEqual(["forwarded"]);
+    expect(detail.forwardedVia).toBe("relay@domain-b.test");
 
     requestedParts.splice(0);
     await synchronizer.syncFolder(client as unknown as ImapFlow, account, "inbox", "INBOX", 100);
@@ -112,12 +122,13 @@ describe("mail HTML sanitization", () => {
       content: {
         htmlPolicyVersion: 2, classificationVersion: 0, subject: detail.subject, from: detail.from, to: detail.to, cc: detail.cc,
         preview: detail.preview, text: detail.text, html: detail.html, attachments: detail.attachments, labels: detail.labels,
-        verificationCode: detail.verificationCode, unsubscribeUrl: detail.unsubscribeUrl
+        verificationCode: detail.verificationCode, unsubscribeUrl: detail.unsubscribeUrl,
+        forwardedVia: detail.forwardedVia, forwardedViaSource: "delivery-chain"
       }
     });
     await synchronizer.syncFolder(client as unknown as ImapFlow, account, "inbox", "INBOX", 100);
     expect(requestedParts).toEqual([]);
-    expect(db.getKnownMessage(account.id, "inbox", "1", 1)?.classificationVersion).toBe(1);
+    expect(db.getKnownMessage(account.id, "inbox", "1", 1)?.classificationVersion).toBe(2);
 
     const legacyContent = { subject: "Legacy", from: [], to: [], cc: [], preview: "legacy", text: "legacy", html: "<p>legacy</p>", attachments: [] };
     db.upsertMessage({ id: summary.id, accountId: account.id, folder: "inbox", mailboxPath: "INBOX", uid: 1, uidValidity: "1", read: false, displayTime: "2026-01-01T00:00:00.000Z", content: legacyContent });
@@ -131,6 +142,44 @@ describe("mail HTML sanitization", () => {
     failBodyFetch = true;
     await expect(synchronizer.syncFolder(client as unknown as ImapFlow, account, "inbox", "INBOX", 100)).rejects.toThrow("body fetch failed");
     expect(db.getMessage(summary.id)?.html).toBe("<p>preserved</p>");
+    db.close();
+  });
+
+  it("identifies forwarding from metadata headers without fetching a body", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "imap2api-mail-forwarding-"));
+    dirs.push(dir);
+    const db = new AppDatabase(join(dir, "test.db"), "t".repeat(32));
+    const publicAccount = db.createAccount({
+      email: "inbox@domain-c.test", password: "authorization-code",
+      imap: { provider: "custom", host: "imap.domain-c.test", port: 993, secure: true }
+    });
+    const account = db.getAccount(publicAccount.id)!;
+    let bodyFetches = 0;
+    const client = {
+      mailbox: { uidValidity: 1n, exists: 1 },
+      getMailboxLock: async () => ({ release: () => undefined }),
+      fetchAll: async () => [{
+        uid: 1, flags: new Set<string>(),
+        envelope: { subject: "Header only", to: [{ address: "source@domain-a.test" }], date: new Date("2026-01-01T00:00:00Z") },
+        headers: Buffer.from([
+          "Delivered-To: inbox@domain-c.test",
+          "Delivered-To: relay@domain-b.test",
+          "Delivered-To: source@domain-a.test",
+          "To: source@domain-a.test",
+          ""
+        ].join("\r\n")),
+        internalDate: new Date("2026-01-01T00:00:00Z"), bodyStructure: undefined
+      }],
+      fetchOne: async () => { bodyFetches += 1; return false; }
+    };
+
+    await new MailboxSynchronizer(db, new EventBroker()).syncFolder(
+      client as unknown as ImapFlow, account, "inbox", "INBOX", 100
+    );
+
+    const message = db.listMessages({ accountId: account.id, view: "all", limit: 50 }).items[0]!;
+    expect(bodyFetches).toBe(0);
+    expect(message).toMatchObject({ labels: ["forwarded"], forwardedVia: "relay@domain-b.test" });
     db.close();
   });
 });

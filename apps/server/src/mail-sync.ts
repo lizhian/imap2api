@@ -4,7 +4,7 @@ import sanitizeHtml from "sanitize-html";
 import type { Address, FolderKind } from "@imap2api/shared";
 import { AppDatabase, type StoredAccount, type StoredMessageContent } from "./database.js";
 import { EventBroker } from "./events.js";
-import { classifyMail, MAIL_CLASSIFICATION_VERSION } from "./mail-classifier.js";
+import { classifyMail, FORWARDING_HEADER_FIELDS, MAIL_CLASSIFICATION_VERSION, resolveForwardedVia } from "./mail-classifier.js";
 
 interface BodyPartPlan {
   textParts: Array<{ part: string; type: "text/plain" | "text/html"; charset: string; encoding: string }>;
@@ -178,7 +178,10 @@ export class MailboxSynchronizer {
       const exists = client.mailbox ? client.mailbox.exists : 0;
       const start = Math.max(1, exists - max + 1);
       const messages = exists > 0
-        ? await client.fetchAll(`${start}:*`, { uid: true, flags: true, envelope: true, internalDate: true, bodyStructure: true })
+        ? await client.fetchAll(`${start}:*`, {
+          uid: true, flags: true, envelope: true, internalDate: true, bodyStructure: true,
+          headers: [...FORWARDING_HEADER_FIELDS]
+        })
         : [];
       const recentUids = messages.map((message) => message.uid);
       for (const message of messages) {
@@ -187,7 +190,12 @@ export class MailboxSynchronizer {
         if (known && known.htmlPolicyVersion === MAIL_HTML_POLICY_VERSION) {
           let changed = false;
           if (known.classificationVersion !== MAIL_CLASSIFICATION_VERSION) {
-            changed = this.db.reclassifyMessage(known.id, account);
+            const env = (message.envelope ?? {}) as { to?: unknown; cc?: unknown };
+            const forwardedVia = await resolveForwardedVia({
+              accountEmail: account.email, aliases: account.aliases,
+              to: normalizeAddresses(env.to), cc: normalizeAddresses(env.cc), headers: message.headers
+            });
+            changed = this.db.reclassifyMessage(known.id, account, forwardedVia);
           }
           if (known.read !== read) {
             this.db.updateKnownRead(known.id, read);
@@ -198,7 +206,7 @@ export class MailboxSynchronizer {
         }
         const displayTime = this.displayTime(message.envelope?.date, message.internalDate);
         if (!known && !this.db.isInRetentionWindow(account.id, displayTime, kind, message.uid)) continue;
-        const content = await this.fetchContent(client, account, message.uid, message.envelope, planBodyParts(message.bodyStructure));
+        const content = await this.fetchContent(client, account, message.uid, message.envelope, message.headers, planBodyParts(message.bodyStructure));
         const id = this.db.upsertMessage({
           ...(known ? { id: known.id } : {}),
           accountId: account.id, folder: kind, mailboxPath: path, uid: message.uid, uidValidity,
@@ -236,7 +244,7 @@ export class MailboxSynchronizer {
     return new Date(Number.isFinite(fallback) ? fallback : Date.now()).toISOString();
   }
 
-  private async fetchContent(client: ImapFlow, account: StoredAccount, uid: number, envelope: unknown, plan: BodyPartPlan): Promise<StoredMessageContent> {
+  private async fetchContent(client: ImapFlow, account: StoredAccount, uid: number, envelope: unknown, headers: Buffer | undefined, plan: BodyPartPlan): Promise<StoredMessageContent> {
     const env = (envelope ?? {}) as { subject?: string; from?: unknown; to?: unknown; cc?: unknown };
     let text = "";
     let html: string | null = null;
@@ -286,9 +294,15 @@ export class MailboxSynchronizer {
       preview: text.replace(/\s+/g, " ").trim().slice(0, 180),
       text, html: sanitized, attachments: plan.attachments
     };
+    const forwardedVia = await resolveForwardedVia({
+      accountEmail: account.email, aliases: account.aliases, to: content.to, cc: content.cc, headers
+    });
     return {
       ...content,
-      ...classifyMail({ accountEmail: account.email, aliases: account.aliases, to: content.to, cc: content.cc, text, html: sanitized })
+      ...classifyMail({
+        accountEmail: account.email, aliases: account.aliases, to: content.to, cc: content.cc,
+        text, html: sanitized, forwardedVia
+      })
     };
   }
 }

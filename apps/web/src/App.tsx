@@ -4,11 +4,11 @@ import * as AlertDialog from "@radix-ui/react-alert-dialog";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import {
   Archive, ArrowLeft, Check, ChevronLeft, ChevronRight, CircleAlert, CircleCheck,
-  Cloud, Copy, Edit3, ExternalLink, Eye, EyeOff, FileText, Forward, GripVertical, Image as ImageIcon, Inbox, KeyRound, LogOut, Mail, MailCheck,
+  Cloud, Copy, Edit3, ExternalLink, Eye, EyeOff, FileText, Forward, GripVertical, Image as ImageIcon, Inbox, KeyRound, LogOut, Mail, MailCheck, MailOpen,
   Paperclip, Plus, RefreshCw, SearchX, Settings as SettingsIcon, ShieldCheck,
   SlidersHorizontal, Trash2, UserRound, X
 } from "lucide-react";
-import type { Account, AccountInput, AccountOrderUpdate, AccountUpdate, MessageDetail, MessageLabel, MessageListResponse, MessageSummary, MessageView, ProviderId, ServerEvent, Settings } from "@imap2api/shared";
+import type { Account, AccountInput, AccountOrderUpdate, AccountUpdate, MessageDetail, MessageLabel, MessageListResponse, MessageSecondaryFilter, MessageSummary, MessageView, ProviderId, ServerEvent, Settings } from "@imap2api/shared";
 import { ApiClient } from "./api";
 import { Button, EmptyState, IconButton, Spinner } from "./components";
 import styles from "./styles.module.css";
@@ -25,6 +25,14 @@ const MESSAGE_LABELS: Record<MessageLabel, { text: string; icon: typeof Forward 
   verification_code: { text: "验证码", icon: KeyRound },
   unsubscribe: { text: "可退订", icon: ExternalLink }
 };
+const MESSAGE_VIEWS: Array<{ value: MessageView; label: string }> = [
+  { value: "all", label: "全部" }, { value: "unread", label: "未读" }, { value: "junk", label: "垃圾箱" }
+];
+const MESSAGE_SECONDARY_FILTERS: Array<{ value: MessageSecondaryFilter; label: string; icon: typeof Forward }> = [
+  { value: "verification_code", label: "验证码", icon: KeyRound },
+  { value: "attachment", label: "附件", icon: Paperclip },
+  { value: "forwarded", label: "转发", icon: Forward }
+];
 
 type Page = "messages" | "accounts" | "settings";
 
@@ -157,6 +165,7 @@ function AuthenticatedApp({ token, onLogout }: { token: string; onLogout: () => 
   const [eventConnection, setEventConnection] = useState<"connecting" | "connected" | "reconnecting">("connecting");
   const [sidebarWidth, setSidebarWidth] = useState(248);
   const [notice, setNotice] = useState<{ kind: "success" | "error"; text: string } | null>(null);
+  const localMessageUpdates = useRef(new Map<string, number>());
   const reducedMotion = useReducedMotion();
 
   const loadAccounts = useCallback(async () => {
@@ -178,6 +187,23 @@ function AuthenticatedApp({ token, onLogout }: { token: string; onLogout: () => 
       throw error;
     }
   }, [accounts, api]);
+
+  const registerLocalMessageUpdate = useCallback((messageId: string) => {
+    localMessageUpdates.current.set(messageId, Date.now() + 5_000);
+  }, []);
+  const cancelLocalMessageUpdate = useCallback((messageId: string) => {
+    localMessageUpdates.current.delete(messageId);
+  }, []);
+  const consumeLocalMessageEcho = useCallback((event: Extract<ServerEvent, { type: "messages.changed" }>) => {
+    const now = Date.now();
+    for (const [messageId, expiresAt] of localMessageUpdates.current) {
+      if (expiresAt <= now) localMessageUpdates.current.delete(messageId);
+    }
+    if (event.addedIds.length || event.deletedIds.length || !event.updatedIds.length) return false;
+    const localOnly = event.updatedIds.every((messageId) => localMessageUpdates.current.has(messageId));
+    event.updatedIds.forEach((messageId) => localMessageUpdates.current.delete(messageId));
+    return localOnly;
+  }, []);
 
   useEffect(() => {
     void loadAccounts();
@@ -204,7 +230,7 @@ function AuthenticatedApp({ token, onLogout }: { token: string; onLogout: () => 
               void loadAccounts();
             } else if (event.type === "messages.changed") {
               void loadAccounts();
-              refreshMessages();
+              if (!consumeLocalMessageEcho(event)) refreshMessages();
             }
           }, controller.signal);
         } catch {
@@ -219,7 +245,7 @@ function AuthenticatedApp({ token, onLogout }: { token: string; onLogout: () => 
       controller.abort();
       if (messageRefresh) clearTimeout(messageRefresh);
     };
-  }, [api, loadAccounts]);
+  }, [api, consumeLocalMessageEcho, loadAccounts]);
 
   useEffect(() => {
     if (activeAccountId && !accounts.some((account) => account.id === activeAccountId)) setActiveAccountId("");
@@ -263,7 +289,7 @@ function AuthenticatedApp({ token, onLogout }: { token: string; onLogout: () => 
         <main className={`${styles.mainContent} ${page === "messages" ? styles.messageContent : ""}`}>
           <AnimatePresence mode="wait" initial={false}>
             <motion.div key={page} className={`${styles.pageFrame} ${page === "messages" ? styles.messageFrame : ""}`} initial={reducedMotion ? { opacity: 0 } : { opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} exit={reducedMotion ? { opacity: 0 } : { opacity: 0, y: -4 }} transition={{ duration: reducedMotion ? 0.08 : 0.2 }}>
-              {page === "messages" && <MessagesPage api={api} accounts={accounts} accountId={activeAccountId} onAccountChange={setActiveAccountId} revision={messageRevision} onNotice={setNotice} />}
+              {page === "messages" && <MessagesPage api={api} accounts={accounts} accountId={activeAccountId} onAccountChange={setActiveAccountId} revision={messageRevision} onLocalMessageUpdate={registerLocalMessageUpdate} onLocalMessageUpdateFailed={cancelLocalMessageUpdate} onNotice={setNotice} />}
               {page === "accounts" && <AccountsPage api={api} accounts={accounts} reload={loadAccounts} reorder={reorderAccounts} onNotice={setNotice} />}
               {page === "settings" && <SettingsPage api={api} onNotice={setNotice} />}
             </motion.div>
@@ -473,9 +499,11 @@ function AccountDialog({ open, account, api, onOpenChange, onSaved }: { open: bo
   </Dialog.Content></Dialog.Portal></Dialog.Root>;
 }
 
-function MessagesPage({ api, accounts, accountId, onAccountChange, revision, onNotice }: { api: ApiClient; accounts: Account[]; accountId: string; onAccountChange: (accountId: string) => void; revision: number; onNotice: (notice: { kind: "success" | "error"; text: string }) => void }) {
+function MessagesPage({ api, accounts, accountId, onAccountChange, revision, onLocalMessageUpdate, onLocalMessageUpdateFailed, onNotice }: { api: ApiClient; accounts: Account[]; accountId: string; onAccountChange: (accountId: string) => void; revision: number; onLocalMessageUpdate: (messageId: string) => void; onLocalMessageUpdateFailed: (messageId: string) => void; onNotice: (notice: { kind: "success" | "error"; text: string }) => void }) {
   const [view, setView] = useState<MessageView>("all");
+  const [secondaryFilters, setSecondaryFilters] = useState<MessageSecondaryFilter[]>([]);
   const [items, setItems] = useState<MessageSummary[]>([]); const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [selected, setSelected] = useState<string | null>(null); const [detail, setDetail] = useState<MessageDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false); const [cursor, setCursor] = useState<string | null>(null);
   const [nextCursor, setNextCursor] = useState<string | null>(null); const [history, setHistory] = useState<Array<string | null>>([]);
@@ -484,54 +512,97 @@ function MessagesPage({ api, accounts, accountId, onAccountChange, revision, onN
   const [now, setNow] = useState(Date.now());
   const workspaceRef = useRef<HTMLElement | null>(null);
 
-  const load = useCallback(async () => {
-    setLoading(true);
+  const load = useCallback(async (background = false) => {
+    if (background) setRefreshing(true); else setLoading(true);
     const query = new URLSearchParams({ view, limit: "50" });
+    secondaryFilters.forEach((filter) => query.append("filter", filter));
     if (accountId) query.set("accountId", accountId); if (cursor) query.set("cursor", cursor);
-    try { const result = await api.request<MessageListResponse>(`/messages?${query}`); setItems(result.items); setNextCursor(result.nextCursor); if (selected && !result.items.some((item) => item.id === selected)) { setSelected(null); setDetail(null); } }
+    try { const result = await api.request<MessageListResponse>(`/messages?${query}`); setItems(result.items); setNextCursor(result.nextCursor); }
     catch (error) { onNotice({ kind: "error", text: error instanceof Error ? error.message : "邮件加载失败" }); }
-    finally { setLoading(false); }
-  }, [accountId, api, cursor, onNotice, revision, selected, view]);
+    finally { if (background) setRefreshing(false); else setLoading(false); }
+  }, [accountId, api, cursor, onNotice, revision, secondaryFilters, view]);
 
   useEffect(() => { void load(); }, [load]);
-  useEffect(() => { setCursor(null); setHistory([]); setSelected(null); setDetail(null); }, [accountId, view]);
+  useEffect(() => { setCursor(null); setHistory([]); setSelected(null); setDetail(null); }, [accountId, secondaryFilters, view]);
   useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now()), 1000);
     return () => window.clearInterval(timer);
   }, []);
 
+  const mark = async (message: MessageSummary | MessageDetail, read: boolean) => {
+    onLocalMessageUpdate(message.id);
+    try { await api.request(`/messages/${message.id}/read`, { method: "PATCH", body: JSON.stringify({ read }) }); setItems((rows) => rows.map((row) => row.id === message.id ? { ...row, read } : row)); setDetail((value) => value?.id === message.id ? { ...value, read } : value); }
+    catch (error) { onLocalMessageUpdateFailed(message.id); onNotice({ kind: "error", text: error instanceof Error ? error.message : "标记失败" }); }
+  };
+
   const openMessage = async (message: MessageSummary) => {
+    if (selected === message.id && (detailLoading || detail?.id === message.id)) return;
     setSelected(message.id); setDetailLoading(true);
-    try { const value = await api.request<MessageDetail>(`/messages/${message.id}`); setDetail(value); }
-    catch (error) { onNotice({ kind: "error", text: error instanceof Error ? error.message : "邮件详情加载失败" }); }
+    try {
+      const value = await api.request<MessageDetail>(`/messages/${message.id}`);
+      setDetail(value); setDetailLoading(false);
+      if (!message.read) await mark(value, true);
+    } catch (error) { onNotice({ kind: "error", text: error instanceof Error ? error.message : "邮件详情加载失败" }); }
     finally { setDetailLoading(false); }
   };
 
-  const mark = async (message: MessageSummary | MessageDetail, read: boolean) => {
-    try { await api.request(`/messages/${message.id}/read`, { method: "PATCH", body: JSON.stringify({ read }) }); setItems((rows) => rows.map((row) => row.id === message.id ? { ...row, read } : row)); setDetail((value) => value?.id === message.id ? { ...value, read } : value); }
-    catch (error) { onNotice({ kind: "error", text: error instanceof Error ? error.message : "标记失败" }); }
+  const markAll = async () => {
+    const targetAccountIds = accountId ? [accountId] : accounts.map((account) => account.id);
+    if (!targetAccountIds.length) return;
+    const outcomes = await Promise.all(targetAccountIds.map(async (targetAccountId) => {
+      try {
+        const result = await api.request<{ count: number; failedFolders: string[] }>(`/accounts/${targetAccountId}/messages/read-all`, { method: "POST" });
+        return { targetAccountId, result, error: null };
+      } catch (error) { return { targetAccountId, result: null, error }; }
+    }));
+    const successful = outcomes.filter((outcome) => outcome.result);
+    const count = successful.reduce((total, outcome) => total + (outcome.result?.count ?? 0), 0);
+    const hasFailures = outcomes.some((outcome) => outcome.error || outcome.result?.failedFolders.length);
+    if (!successful.length) {
+      const firstError = outcomes.find((outcome) => outcome.error)?.error;
+      onNotice({ kind: "error", text: firstError instanceof Error ? firstError.message : "全部已读失败" });
+      return;
+    }
+    onNotice({ kind: hasFailures ? "error" : "success", text: hasFailures ? `已处理 ${count} 封，部分账号或文件夹失败` : `已标记 ${count} 封邮件` });
+    setConfirmAll(false); await load();
   };
 
-  const markAll = async () => {
-    if (!accountId) return;
-    try {
-      const result = await api.request<{ count: number; failedFolders: string[] }>(`/accounts/${accountId}/messages/read-all`, { method: "POST" });
-      onNotice({ kind: result.failedFolders.length ? "error" : "success", text: result.failedFolders.length ? `已处理 ${result.count} 封，部分文件夹失败` : `已标记 ${result.count} 封邮件` });
-      setConfirmAll(false); await load();
-    } catch (error) { onNotice({ kind: "error", text: error instanceof Error ? error.message : "全部已读失败" }); }
+  const canMarkAll = items.some((item) => !item.read) || (accountId
+    ? (accounts.find((account) => account.id === accountId)?.unreadCount ?? 0) > 0
+    : accounts.some((account) => account.unreadCount > 0));
+  const toggleSecondaryFilter = (filter: MessageSecondaryFilter) => {
+    setSecondaryFilters((current) => current.includes(filter)
+      ? current.filter((value) => value !== filter)
+      : [...current, filter]);
   };
 
   return <section ref={workspaceRef} className={styles.mailWorkspace} style={{ "--mail-list-width": `${listWidth}px` } as CSSProperties}>
     <div className={`${styles.mailListPane} ${selected ? styles.mobileHidden : ""}`}>
       <div className={styles.mailControls}>
         <select className={`select select-sm ${styles.mobileAccountSelect}`} aria-label="筛选邮箱账号" value={accountId} onChange={(event) => onAccountChange(event.target.value)}><option value="">聚合收件箱</option>{accounts.map((account) => <option key={account.id} value={account.id}>{account.email}</option>)}</select>
-        <div className={`join ${styles.viewGroup}`} role="tablist" aria-label="邮件视图">{(["all", "unread", "junk"] as const).map((item) => <button key={item} role="tab" aria-selected={view === item} className={`join-item btn btn-sm ${styles.viewButton} ${view === item ? `btn-primary btn-active ${styles.viewButtonActive}` : ""}`} onClick={() => setView(item)}>{item === "all" ? "全部" : item === "unread" ? "未读" : "垃圾箱"}</button>)}</div>
-        <IconButton label="全部已读" disabled={!accountId || !items.some((item) => !item.read)} onClick={() => setConfirmAll(true)}><MailCheck size={17} /></IconButton>
+        <div className={styles.filterBar}>
+          <div className={`join ${styles.viewGroup}`} role="tablist" aria-label="邮件视图">{MESSAGE_VIEWS.map((item) => <button key={item.value} role="tab" aria-selected={view === item.value} className={`join-item btn btn-sm ${styles.viewButton} ${view === item.value ? `btn-primary btn-active ${styles.viewButtonActive}` : ""}`} onClick={() => setView(item.value)}>{item.label}</button>)}</div>
+          <div className={`join ${styles.secondaryFilterGroup}`} aria-label="邮件内容筛选">{MESSAGE_SECONDARY_FILTERS.map((item) => <button key={item.value} type="button" aria-pressed={secondaryFilters.includes(item.value)} className={`join-item btn btn-sm ${styles.secondaryFilterButton} ${secondaryFilters.includes(item.value) ? styles.secondaryFilterButtonActive : ""}`} onClick={() => toggleSecondaryFilter(item.value)}>{item.label}</button>)}</div>
+          <details className={`dropdown dropdown-end ${styles.filterDropdown}`}>
+            <summary role="button" className={`btn btn-sm ${styles.filterDropdownTrigger}`} aria-label={`更多筛选，已选 ${secondaryFilters.length} 项`} onKeyDown={(event) => {
+              if (event.key !== "Enter" && event.key !== " ") return;
+              event.preventDefault();
+              event.currentTarget.parentElement?.toggleAttribute("open");
+            }}><SlidersHorizontal size={15} />{secondaryFilters.length > 0 && <span>{secondaryFilters.length}</span>}</summary>
+            <ul className={`menu dropdown-content ${styles.filterMenu}`} aria-label="更多筛选选项">{MESSAGE_SECONDARY_FILTERS.map((item) => {
+              const FilterIcon = item.icon;
+              return <li key={item.value}><label><input className="checkbox checkbox-sm" type="checkbox" checked={secondaryFilters.includes(item.value)} onChange={() => toggleSecondaryFilter(item.value)} /><FilterIcon size={15} />{item.label}</label></li>;
+            })}</ul>
+          </details>
+        </div>
+        <IconButton label="刷新邮件列表" disabled={loading || refreshing} onClick={() => void load(true)}><RefreshCw size={17} className={refreshing ? styles.rotating : ""} /></IconButton>
+        <IconButton label="全部已读" disabled={!canMarkAll} onClick={() => setConfirmAll(true)}><MailOpen size={17} /></IconButton>
+        <span className={styles.srOnly} role="status" aria-live="polite">{refreshing ? "正在刷新邮件列表" : ""}</span>
       </div>
       <div className={styles.messageList} aria-busy={loading}>
         {loading ? <div className={styles.centerState}><Spinner /></div> : items.length === 0 ? <EmptyState icon={<SearchX size={27} />} title="没有符合条件的邮件" /> : items.map((message) => <button key={message.id} className={`list-row ${styles.messageRow} ${selected === message.id ? styles.messageSelected : ""} ${message.read ? styles.messageRead : ""}`} onClick={() => void openMessage(message)}>
           <span className={styles.unreadDot} aria-label={message.read ? "已读" : "未读"} />
-          <span className={styles.messageMain}><span className={styles.messageMeta}><strong>{senderLabel(message)}</strong><span className={styles.messageMetaRight}><span className={styles.messageSignals}>{message.labels.length > 0 && <MessageLabels labels={message.labels} compact />}{message.hasAttachments && <Paperclip size={14} aria-label="包含附件" />}{message.folder === "junk" && <Archive size={14} aria-label="垃圾箱" />}</span><time dateTime={message.displayTime} title={formatDate(message.displayTime)}>{formatRelativeDate(message.displayTime, now)}</time></span></span><span className={styles.messageSubject}>{message.subject}</span><span className={styles.messagePreview}>{message.preview || "无正文预览"}</span></span>
+          <span className={styles.messageMain}><span className={styles.messageMeta}><strong>{senderLabel(message)}</strong><span className={styles.messageMetaRight}><span className={styles.messageSignals}>{message.labels.length > 0 && <MessageLabels labels={message.labels} forwardedVia={message.forwardedVia} compact />}{message.hasAttachments && <Paperclip size={14} aria-label="包含附件" />}{message.folder === "junk" && <Archive size={14} aria-label="垃圾箱" />}</span><time dateTime={message.displayTime} title={formatDate(message.displayTime)}>{formatRelativeDate(message.displayTime, now)}</time></span></span><span className={styles.messageSubject}>{message.subject}</span><span className={styles.messagePreview}>{message.preview || "无正文预览"}</span></span>
         </button>)}
       </div>
       <div className={styles.pagination}><Button variant="quiet" disabled={!history.length} onClick={() => { const previous = [...history]; const value = previous.pop() ?? null; setHistory(previous); setCursor(value); }}><ChevronLeft size={16} />上一页</Button><span>每页 50 封</span><Button variant="quiet" disabled={!nextCursor} onClick={() => { setHistory((values) => [...values, cursor]); setCursor(nextCursor); }} >下一页<ChevronRight size={16} /></Button></div>
@@ -540,7 +611,7 @@ function MessagesPage({ api, accounts, accountId, onAccountChange, revision, onN
     <div className={`${styles.detailPane} ${selected ? styles.detailVisible : ""}`}>
       {detailLoading ? <div className={styles.centerState}><Spinner label="正在读取邮件" /></div> : detail ? <MessageDetailView message={detail} onBack={() => { setSelected(null); setDetail(null); }} onMark={(read) => void mark(detail, read)} /> : <EmptyState icon={<FileText size={28} />} title="选择一封邮件查看内容" />}
     </div>
-    <ConfirmDialog open={confirmAll} title="将缓存邮件全部标记为已读？" description="操作会同步更新当前账号已缓存的收件箱和垃圾箱邮件。" confirmLabel="全部已读" onOpenChange={setConfirmAll} onConfirm={() => void markAll()} />
+    <ConfirmDialog open={confirmAll} title="将缓存邮件全部标记为已读？" description={accountId ? "操作会同步更新当前账号已缓存的收件箱和垃圾箱邮件。" : "操作会同步更新所有账号已缓存的收件箱和垃圾箱邮件。"} confirmLabel="全部已读" onOpenChange={setConfirmAll} onConfirm={() => void markAll()} />
   </section>;
 }
 
@@ -606,12 +677,13 @@ export function MessageDetailView({ message, onBack, onMark }: { message: Messag
   </article>;
 }
 
-function MessageLabels({ labels, compact = false, toolbar = false }: { labels: MessageLabel[]; compact?: boolean; toolbar?: boolean }) {
+function MessageLabels({ labels, forwardedVia = null, compact = false, toolbar = false }: { labels: MessageLabel[]; forwardedVia?: string | null; compact?: boolean; toolbar?: boolean }) {
   return <span className={`${styles.messageLabels} ${compact ? styles.messageLabelsCompact : ""} ${toolbar ? styles.toolbarLabels : ""}`}>{labels.map((label) => {
     const item = MESSAGE_LABELS[label];
     if (!item) return null;
     const Icon = item.icon;
-    return <span className={`badge badge-soft ${compact ? "badge-xs" : "badge-sm"}`} key={label} data-label={label}><Icon size={compact ? 11 : 13} />{item.text}</span>;
+    const showForwardedVia = compact && label === "forwarded" && forwardedVia;
+    return <span className={`badge badge-soft ${compact ? "badge-xs" : "badge-sm"} ${showForwardedVia ? styles.forwardedViaLabel : ""}`} key={label} data-label={label} {...(showForwardedVia ? { "aria-label": `经由邮箱 ${forwardedVia}`, title: `经由邮箱 ${forwardedVia}` } : {})}><Icon size={compact ? 11 : 13} />{showForwardedVia ? <><span className={styles.forwardedViaAddress}>{forwardedVia}</span><span className={styles.forwardedViaFallback} aria-hidden="true">转发</span></> : item.text}</span>;
   })}</span>;
 }
 

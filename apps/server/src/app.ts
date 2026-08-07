@@ -36,6 +36,10 @@ const accountOrderSchema = z.object({
 const messageListSchema = z.object({
   accountId: z.string().uuid().optional(),
   view: z.enum(["all", "unread", "junk"]).default("all"),
+  filter: z.preprocess(
+    (value) => value === undefined ? [] : Array.isArray(value) ? value : [value],
+    z.array(z.enum(["verification_code", "attachment", "forwarded"])).max(3)
+  ).transform((values) => [...new Set(values)]),
   after: z.iso.datetime({ offset: true }).optional(),
   before: z.iso.datetime({ offset: true }).optional(),
   cursor: z.string().max(1000).optional(),

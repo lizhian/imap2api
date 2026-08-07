@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import type { MessageDetail } from "@imap2api/shared";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import type { Account, MessageDetail, MessageSummary } from "@imap2api/shared";
 import { App, buildMessageSrcDoc, formatRelativeDate, hasRemoteImageReferences, MessageDetailView } from "./App";
 
 afterEach(() => { cleanup(); sessionStorage.clear(); location.hash = ""; vi.restoreAllMocks(); vi.unstubAllGlobals(); });
@@ -180,6 +180,163 @@ describe("relative message time", () => {
   });
 });
 
+describe("message list interactions", () => {
+  const account = (id: string, email: string): Account => ({
+    id, email, aliases: [], provider: "gmail", imap: { host: "imap.gmail.com", port: 993, secure: true },
+    hasCredential: true, status: "connected", syncMode: "idle", messageCount: 1, unreadCount: 1,
+    lastSyncedAt: "2026-08-07T00:00:00.000Z", lastError: null,
+    createdAt: "2026-08-07T00:00:00.000Z", updatedAt: "2026-08-07T00:00:00.000Z"
+  });
+  const summary: MessageSummary = {
+    id: "message-1", accountId: "account-1", accountEmail: "first@example.com", subject: "Unread subject",
+    from: [{ address: "sender@example.com" }], preview: "Unread preview", displayTime: "2026-08-07T00:00:00.000Z",
+    folder: "inbox", read: false, hasAttachments: false, labels: [], forwardedVia: null
+  };
+  const detail: MessageDetail = {
+    ...summary, to: [{ address: "first@example.com" }], cc: [], attachments: [], text: "Message body", html: null,
+    verificationCode: null, unsubscribeUrl: null
+  };
+
+  it("opens an unread message without refreshing the list and marks it as read", async () => {
+    sessionStorage.setItem("imap2api-token", "valid-token");
+    let eventController!: ReadableStreamDefaultController<Uint8Array>;
+    const eventStream = new ReadableStream<Uint8Array>({ start(controller) { eventController = controller; } });
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/events")) return { ok: true, status: 200, body: eventStream } as Response;
+      const json = async () => url.endsWith("/accounts") ? [account("account-1", "first@example.com")]
+        : url.endsWith("/settings") ? { maxMessagesPerAccount: 100, pollIntervalSeconds: 10 }
+          : url.includes("/messages?") ? { items: [summary], nextCursor: null }
+            : url.endsWith("/messages/message-1") ? detail
+              : url.endsWith("/messages/message-1/read") && init?.method === "PATCH" ? { ok: true }
+                : { ok: true };
+      return { ok: true, status: 200, body: null, json } as Response;
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<App />);
+    const row = await screen.findByRole("button", { name: /Unread subject/ });
+    const initialListRequests = fetchMock.mock.calls.filter(([input]) => String(input).includes("/messages?")).length;
+    fireEvent.click(row);
+
+    expect(await screen.findByRole("heading", { name: "Unread subject" })).toBeInTheDocument();
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/v1/messages/message-1/read", expect.objectContaining({
+      method: "PATCH", body: JSON.stringify({ read: true })
+    })));
+    await act(async () => {
+      eventController.enqueue(new TextEncoder().encode(`event: messages.changed\ndata: ${JSON.stringify({
+        accountId: "account-1", folder: "inbox", addedIds: [], updatedIds: ["message-1"], deletedIds: [],
+        occurredAt: "2026-08-07T00:01:00.000Z"
+      })}\n\n`));
+      await new Promise((resolve) => setTimeout(resolve, 150));
+    });
+    expect(fetchMock.mock.calls.filter(([input]) => String(input).includes("/messages?")).length).toBe(initialListRequests);
+    await act(async () => {
+      eventController.enqueue(new TextEncoder().encode(`event: messages.changed\ndata: ${JSON.stringify({
+        accountId: "account-1", folder: "inbox", addedIds: ["message-2"], updatedIds: [], deletedIds: [],
+        occurredAt: "2026-08-07T00:02:00.000Z"
+      })}\n\n`));
+      await new Promise((resolve) => setTimeout(resolve, 150));
+    });
+    expect(fetchMock.mock.calls.filter(([input]) => String(input).includes("/messages?")).length).toBe(initialListRequests + 1);
+    const detailRequests = fetchMock.mock.calls.filter(([input]) => String(input).endsWith("/messages/message-1")).length;
+    fireEvent.click(row);
+    expect(fetchMock.mock.calls.filter(([input]) => String(input).endsWith("/messages/message-1")).length).toBe(detailRequests);
+  });
+
+  it("allows all cached mail to be marked as read from the aggregate inbox", async () => {
+    sessionStorage.setItem("imap2api-token", "valid-token");
+    const accounts = [account("account-1", "first@example.com"), account("account-2", "second@example.com")];
+    const eventStream = new ReadableStream<Uint8Array>({ start() {} });
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/events")) return { ok: true, status: 200, body: eventStream } as Response;
+      const json = async () => url.endsWith("/accounts") ? accounts
+        : url.endsWith("/settings") ? { maxMessagesPerAccount: 100, pollIntervalSeconds: 10 }
+          : url.includes("/messages?") ? { items: [summary], nextCursor: null }
+            : url.includes("/messages/read-all") ? { count: 1, failedFolders: [] }
+              : { ok: true };
+      return { ok: true, status: 200, body: null, json } as Response;
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<App />);
+    const markAllButton = await screen.findByRole("button", { name: "全部已读" });
+    expect(markAllButton).toBeEnabled();
+    fireEvent.click(markAllButton);
+    const dialog = await screen.findByRole("alertdialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: "全部已读" }));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/v1/accounts/account-1/messages/read-all", expect.objectContaining({ method: "POST" })));
+    expect(fetchMock).toHaveBeenCalledWith("/api/v1/accounts/account-2/messages/read-all", expect.objectContaining({ method: "POST" }));
+  });
+
+  it("combines a message view with multiple content filters and refreshes in place", async () => {
+    sessionStorage.setItem("imap2api-token", "valid-token");
+    const eventStream = new ReadableStream<Uint8Array>({ start() {} });
+    let resolveRefresh: (() => void) | null = null;
+    let blockRefresh = false;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/events")) return { ok: true, status: 200, body: eventStream } as Response;
+      if (url.includes("filter=attachment") && blockRefresh) {
+        await new Promise<void>((resolve) => { resolveRefresh = resolve; });
+      }
+      const json = async () => url.endsWith("/accounts") ? [account("account-1", "first@example.com")]
+        : url.endsWith("/settings") ? { maxMessagesPerAccount: 100, pollIntervalSeconds: 10 }
+          : url.includes("/messages?") ? { items: [{ ...summary, labels: ["verification_code"] }], nextCursor: null }
+            : { ok: true };
+      return { ok: true, status: 200, body: null, json } as Response;
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<App />);
+    expect(await screen.findByText("Unread subject")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("tab", { name: "未读" }));
+    fireEvent.click(screen.getByRole("button", { name: "验证码" }));
+    fireEvent.click(screen.getByRole("button", { name: "附件" }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
+      "/api/v1/messages?view=unread&limit=50&filter=verification_code&filter=attachment", expect.any(Object)
+    ));
+    expect(screen.getByRole("tab", { name: "未读" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("button", { name: "验证码" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: "附件" })).toHaveAttribute("aria-pressed", "true");
+    const moreFilters = screen.getByRole("button", { name: "更多筛选，已选 2 项" });
+    fireEvent.keyDown(moreFilters, { key: "Enter" });
+    expect(moreFilters.closest("details")).toHaveAttribute("open");
+
+    blockRefresh = true;
+    fireEvent.click(screen.getByRole("button", { name: "刷新邮件列表" }));
+    expect(screen.getByText("Unread subject")).toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent("正在刷新邮件列表");
+    await waitFor(() => expect(resolveRefresh).not.toBeNull());
+    (resolveRefresh as (() => void) | null)?.();
+    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent(""));
+  });
+
+  it("exposes the full forwarding mailbox on the compact list label", async () => {
+    sessionStorage.setItem("imap2api-token", "valid-token");
+    const eventStream = new ReadableStream<Uint8Array>({ start() {} });
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/events")) return { ok: true, status: 200, body: eventStream } as Response;
+      const json = async () => url.endsWith("/accounts") ? [account("account-1", "first@example.com")]
+        : url.endsWith("/settings") ? { maxMessagesPerAccount: 100, pollIntervalSeconds: 10 }
+          : url.includes("/messages?") ? {
+            items: [{ ...summary, labels: ["forwarded"], forwardedVia: "relay@domain-b.test" }], nextCursor: null
+          } : { ok: true };
+      return { ok: true, status: 200, body: null, json } as Response;
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<App />);
+    const label = await screen.findByLabelText("经由邮箱 relay@domain-b.test");
+    expect(label).toHaveAttribute("title", "经由邮箱 relay@domain-b.test");
+    expect(label).toHaveTextContent("relay@domain-b.test");
+    expect(label).toHaveTextContent("转发");
+  });
+});
+
 describe("mail body isolation", () => {
   it("allows only inline styles and localized images without overriding message typography", () => {
     const html = '<p style="font:20px serif">Hello</p><img data-remote-src="https://images.example.test/a.png"><a href="https://example.test/path" target="_blank">Link</a>';
@@ -214,7 +371,7 @@ describe("mail body isolation", () => {
     const message: MessageDetail = {
       id: "message-1", accountId: "account-1", accountEmail: "mail@example.test", subject: "Styled",
       from: [{ address: "sender@example.test" }], to: [{ address: "mail@example.test" }], cc: [], preview: "", displayTime: "2026-01-01T00:00:00.000Z",
-      folder: "inbox", read: false, hasAttachments: false, attachments: [], labels: [], verificationCode: null, unsubscribeUrl: null, text: "",
+      folder: "inbox", read: false, hasAttachments: false, attachments: [], labels: [], forwardedVia: null, verificationCode: null, unsubscribeUrl: null, text: "",
       html: '<img data-remote-src="https://images.example.test/a.png"><a data-safe-href="https://example.test/path">Example link</a>'
     };
     const view = render(<MessageDetailView message={message} onBack={vi.fn()} onMark={vi.fn()} />);
@@ -252,7 +409,8 @@ describe("mail body isolation", () => {
       from: [{ address: "sender@example.test" }], to: [{ address: "mail@example.test" }], cc: [], preview: "",
       displayTime: "2026-01-01T00:00:00.000Z", folder: "inbox", read: false, hasAttachments: false,
       attachments: [], text: "验证码 123456", html: null,
-      labels: ["forwarded", "verification_code", "unsubscribe"], verificationCode: "123456", unsubscribeUrl: "https://example.test/unsubscribe"
+      labels: ["forwarded", "verification_code", "unsubscribe"], forwardedVia: "relay@domain-b.test",
+      verificationCode: "123456", unsubscribeUrl: "https://example.test/unsubscribe"
     };
     const view = render(<MessageDetailView message={message} onBack={vi.fn()} onMark={vi.fn()} />);
 

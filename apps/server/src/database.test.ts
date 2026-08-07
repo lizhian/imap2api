@@ -35,13 +35,17 @@ describe("AppDatabase", () => {
       content: {
         subject: "Code", from: [], to: [{ address: "other@gmail.com" }], cc: [], preview: "验证码 123456",
         text: "验证码 123456", html: '<p>退订 <a data-safe-href="https://private.example/unsubscribe">here</a></p>', attachments: [],
-        classificationVersion: 1, labels: ["forwarded", "verification_code", "unsubscribe"],
-        verificationCode: "123456", unsubscribeUrl: "https://private.example/unsubscribe"
+        classificationVersion: 2, labels: ["forwarded", "verification_code", "unsubscribe"],
+        verificationCode: "123456", unsubscribeUrl: "https://private.example/unsubscribe",
+        forwardedVia: "relay@private.example", forwardedViaSource: "delivery-chain"
       }
     });
     const item = db.listMessages({ view: "all", limit: 50 }).items[0]!;
     expect(item.labels).toEqual(["forwarded", "verification_code", "unsubscribe"]);
-    expect(db.getMessage(item.id)).toMatchObject({ verificationCode: "123456", unsubscribeUrl: "https://private.example/unsubscribe" });
+    expect(item.forwardedVia).toBe("relay@private.example");
+    expect(db.getMessage(item.id)).toMatchObject({
+      verificationCode: "123456", unsubscribeUrl: "https://private.example/unsubscribe", forwardedVia: "relay@private.example"
+    });
     expect(() => db.updateAccount(account.id, { aliases: ["MAIN@gmail.com"] })).toThrow("不能与主邮箱相同");
     expect(() => db.updateAccount(account.id, { aliases: ["same@gmail.com", "SAME@gmail.com"] })).toThrow("不能重复");
     db.close();
@@ -49,6 +53,36 @@ describe("AppDatabase", () => {
     expect(bytes).not.toContain("alias@gmail.com");
     expect(bytes).not.toContain("123456");
     expect(bytes).not.toContain("private.example");
+  });
+
+  it("combines encrypted labels and attachment filters without breaking cursor pagination", () => {
+    const { db } = database();
+    const account = db.createAccount({ email: "filters@gmail.com", password: "secret" });
+    const messages = [
+      { labels: ["verification_code"], attachments: ["first.pdf"] },
+      { labels: ["forwarded"], attachments: ["forwarded.pdf"] },
+      { labels: ["verification_code"], attachments: [] },
+      { labels: ["verification_code", "forwarded"], attachments: ["latest.pdf"] }
+    ] as const;
+    messages.forEach((message, index) => db.upsertMessage({
+      accountId: account.id, folder: "inbox", mailboxPath: "INBOX", uid: index + 1, uidValidity: "1", read: false,
+      displayTime: `2026-01-0${index + 1}T00:00:00.000Z`,
+      content: {
+        subject: `message-${index + 1}`, from: [], to: [], cc: [], preview: "", text: "", html: null,
+        attachments: [...message.attachments], labels: [...message.labels]
+      }
+    }));
+
+    const first = db.listMessages({ view: "unread", filter: ["verification_code", "attachment"], limit: 1 });
+    expect(first.items.map((message) => message.subject)).toEqual(["message-4"]);
+    expect(first.nextCursor).not.toBeNull();
+    const second = db.listMessages({ view: "unread", filter: ["verification_code", "attachment"], cursor: first.nextCursor!, limit: 1 });
+    expect(second.items.map((message) => message.subject)).toEqual(["message-1"]);
+    expect(second.nextCursor).toBeNull();
+
+    expect(db.listMessages({ view: "all", filter: ["verification_code", "attachment", "forwarded"], limit: 10 }).items
+      .map((message) => message.subject)).toEqual(["message-4"]);
+    db.close();
   });
 
   it("returns the cached and unread message counts for each account", () => {

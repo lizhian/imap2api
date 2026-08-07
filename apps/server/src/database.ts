@@ -11,6 +11,7 @@ import type {
   MessageDetail,
   MessageLabel,
   MessageListResponse,
+  MessageSecondaryFilter,
   MessageSummary,
   MessageView,
   Settings,
@@ -19,7 +20,7 @@ import type {
 import { CryptoService } from "./crypto.js";
 import { resolveImapConfig, type ResolvedImapConfig } from "./providers.js";
 import { InputError } from "./errors.js";
-import { classifyMail, type MailClassificationResult } from "./mail-classifier.js";
+import { classifyMail, type ForwardedViaResult, type ForwardedViaSource, type MailClassificationResult } from "./mail-classifier.js";
 
 interface AccountConfigPayload {
   email: string;
@@ -51,6 +52,8 @@ export interface StoredMessageContent {
   labels?: MessageLabel[];
   verificationCode?: string | null;
   unsubscribeUrl?: string | null;
+  forwardedVia?: string | null;
+  forwardedViaSource?: ForwardedViaSource | null;
 }
 
 export interface SyncedMessage {
@@ -326,11 +329,11 @@ export class AppDatabase {
     };
   }
 
-  reclassifyMessage(id: string, account: StoredAccount): boolean {
+  reclassifyMessage(id: string, account: StoredAccount, forwardedVia?: ForwardedViaResult | null): boolean {
     const row = this.raw.prepare("SELECT content_enc FROM messages WHERE id = ?").get(id) as { content_enc: Buffer } | undefined;
     if (!row) return false;
     const content = this.crypto.decrypt<StoredMessageContent>(asBuffer(row.content_enc));
-    const classification = classifyStoredContent(account, content);
+    const classification = classifyStoredContent(account, content, forwardedVia);
     const changed = classificationChanged(content, classification);
     this.raw.prepare("UPDATE messages SET content_enc = ?, updated_at = ? WHERE id = ?")
       .run(this.crypto.encrypt({ ...content, ...classification }), new Date().toISOString(), id);
@@ -421,22 +424,39 @@ export class AppDatabase {
     return removed;
   }
 
-  listMessages(options: { accountId?: string; view: MessageView; after?: string; before?: string; cursor?: string; limit: number }): MessageListResponse {
+  listMessages(options: { accountId?: string; view: MessageView; filter?: MessageSecondaryFilter[]; after?: string; before?: string; cursor?: string; limit: number }): MessageListResponse {
     const conditions: string[] = [];
     const params: unknown[] = [];
+    const filters = options.filter ?? [];
+    const labelFilters = filters.filter((filter): filter is Extract<MessageSecondaryFilter, MessageLabel> => filter !== "attachment");
     if (options.accountId) { conditions.push("account_id = ?"); params.push(options.accountId); }
     if (options.view === "unread") conditions.push("is_read = 0");
     if (options.view === "junk") conditions.push("folder_kind = 'junk'");
+    if (filters.includes("attachment")) conditions.push("has_attachments = 1");
     if (options.after) { conditions.push("display_time >= ?"); params.push(options.after); }
     if (options.before) { conditions.push("display_time < ?"); params.push(options.before); }
-    if (options.cursor) {
-      const [time, id] = this.decodeCursor(options.cursor);
-      conditions.push("(display_time < ? OR (display_time = ? AND id < ?))");
-      params.push(time, time, id);
+    let scanCursor = options.cursor ? this.decodeCursor(options.cursor) : null;
+    const rows: MessageRow[] = [];
+    const batchSize = labelFilters.length ? Math.max(100, options.limit * 2) : options.limit + 1;
+    while (rows.length <= options.limit) {
+      const batchConditions = [...conditions];
+      const batchParams = [...params];
+      if (scanCursor) {
+        batchConditions.push("(display_time < ? OR (display_time = ? AND id < ?))");
+        batchParams.push(scanCursor[0], scanCursor[0], scanCursor[1]);
+      }
+      const where = batchConditions.length ? `WHERE ${batchConditions.join(" AND ")}` : "";
+      const batch = this.raw.prepare(`SELECT * FROM messages ${where} ORDER BY display_time DESC, id DESC LIMIT ?`)
+        .all(...batchParams, batchSize) as MessageRow[];
+      for (const row of batch) {
+        const labels = labelFilters.length ? (this.crypto.decrypt<StoredMessageContent>(asBuffer(row.content_enc)).labels ?? []) : [];
+        if (labelFilters.every((filter) => labels.includes(filter))) rows.push(row);
+      }
+      if (rows.length > options.limit || batch.length < batchSize) break;
+      const tail = batch.at(-1);
+      if (!tail) break;
+      scanCursor = [tail.display_time, tail.id];
     }
-    const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
-    const rows = this.raw.prepare(`SELECT * FROM messages ${where} ORDER BY display_time DESC, id DESC LIMIT ?`)
-      .all(...params, options.limit + 1) as MessageRow[];
     const hasMore = rows.length > options.limit;
     const selected = rows.slice(0, options.limit);
     const accountCache = new Map(this.listAccounts().map((account) => [account.id, account.email]));
@@ -496,7 +516,7 @@ export class AppDatabase {
       id: row.id, accountId: row.account_id, accountEmail, subject: content.subject,
       from: content.from, preview: content.preview, displayTime: row.display_time,
       folder: row.folder_kind, read: Boolean(row.is_read), hasAttachments: Boolean(row.has_attachments),
-      labels: content.labels ?? []
+      labels: content.labels ?? [], forwardedVia: content.forwardedVia ?? null
     };
   }
 
@@ -544,15 +564,21 @@ function normalizeAliases(email: string, values: string[]): string[] {
   return aliases;
 }
 
-function classifyStoredContent(account: StoredAccount, content: StoredMessageContent): MailClassificationResult {
+function classifyStoredContent(account: StoredAccount, content: StoredMessageContent, forwardedVia?: ForwardedViaResult | null): MailClassificationResult {
+  const preserved = content.forwardedVia && content.forwardedViaSource && content.forwardedViaSource !== "recipient"
+    ? { address: content.forwardedVia, source: content.forwardedViaSource }
+    : undefined;
+  const resolved = forwardedVia === undefined ? preserved : forwardedVia;
   return classifyMail({
     accountEmail: account.email, aliases: account.aliases, to: content.to, cc: content.cc,
-    text: content.text, html: content.html
+    text: content.text, html: content.html, ...(resolved === undefined ? {} : { forwardedVia: resolved })
   });
 }
 
 function classificationChanged(content: StoredMessageContent, next: MailClassificationResult): boolean {
   return JSON.stringify(content.labels ?? []) !== JSON.stringify(next.labels)
     || (content.verificationCode ?? null) !== next.verificationCode
-    || (content.unsubscribeUrl ?? null) !== next.unsubscribeUrl;
+    || (content.unsubscribeUrl ?? null) !== next.unsubscribeUrl
+    || (content.forwardedVia ?? null) !== next.forwardedVia
+    || (content.forwardedViaSource ?? null) !== next.forwardedViaSource;
 }

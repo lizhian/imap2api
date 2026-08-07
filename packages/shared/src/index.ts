@@ -4,6 +4,7 @@ export type SyncMode = "idle" | "polling";
 export type MessageView = "all" | "unread" | "junk";
 export type FolderKind = "inbox" | "junk";
 export type MessageLabel = "forwarded" | "verification_code" | "unsubscribe";
+export type MessageSecondaryFilter = "verification_code" | "attachment" | "forwarded";
 
 export interface ImapConfig {
   provider: ProviderId;
@@ -64,6 +65,7 @@ export interface MessageSummary {
   read: boolean;
   hasAttachments: boolean;
   labels: MessageLabel[];
+  forwardedVia: string | null;
 }
 
 export interface MessageDetail extends MessageSummary {
