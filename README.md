@@ -81,6 +81,8 @@ npm run build
 
 ## HTTP API
 
+面向第三方项目集成的完整入参、出参、错误码、分页和 SSE 契约见 [HTTP API 接口说明](docs/API.md)。
+
 所有 `/api/v1` 请求都需要认证：
 
 ```bash
