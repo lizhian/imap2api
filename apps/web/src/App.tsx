@@ -4,11 +4,11 @@ import * as AlertDialog from "@radix-ui/react-alert-dialog";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import {
   Archive, ArrowLeft, Check, ChevronLeft, ChevronRight, CircleAlert, CircleCheck,
-  Cloud, Edit3, Eye, EyeOff, FileText, Inbox, KeyRound, LogOut, Mail, MailCheck,
+  Cloud, Copy, Edit3, ExternalLink, Eye, EyeOff, FileText, Forward, Image as ImageIcon, Inbox, KeyRound, LogOut, Mail, MailCheck,
   Menu, Paperclip, Plus, RefreshCw, SearchX, Settings as SettingsIcon, ShieldCheck,
   SlidersHorizontal, Trash2, UserRound, X
 } from "lucide-react";
-import type { Account, AccountInput, AccountUpdate, MessageDetail, MessageListResponse, MessageSummary, MessageView, ProviderId, ServerEvent, Settings } from "@imap2api/shared";
+import type { Account, AccountInput, AccountUpdate, MessageDetail, MessageLabel, MessageListResponse, MessageSummary, MessageView, ProviderId, ServerEvent, Settings } from "@imap2api/shared";
 import { ApiClient } from "./api";
 import { Button, EmptyState, IconButton, Spinner } from "./components";
 import styles from "./styles.module.css";
@@ -20,6 +20,11 @@ const PROVIDERS: Array<{ value: ProviderId; label: string }> = [
   { value: "outlook", label: "Outlook" }, { value: "qq-enterprise", label: "QQ 企业邮箱" },
   { value: "163", label: "163 邮箱" }, { value: "custom", label: "自定义" }
 ];
+const MESSAGE_LABELS: Record<MessageLabel, { text: string; icon: typeof Forward }> = {
+  forwarded: { text: "转发", icon: Forward },
+  verification_code: { text: "验证码", icon: KeyRound },
+  unsubscribe: { text: "可退订", icon: ExternalLink }
+};
 
 type Page = "messages" | "accounts" | "settings";
 
@@ -244,7 +249,7 @@ function AccountsPage({ api, accounts, reload, onNotice }: { api: ApiClient; acc
           {accounts.map((account) => {
             const syncing = localSyncing.has(account.id) || account.status === "connecting";
             return <article key={account.id} className={`${styles.accountRow} ${syncing ? styles.syncing : ""}`}>
-              <div className={styles.accountIdentity}><span className={styles.mailAvatar}><Mail size={18} /></span><div><strong>{account.email}</strong><span>{PROVIDERS.find((provider) => provider.value === account.provider)?.label ?? account.provider} · {account.imap.host}</span><span>{account.syncMode === "idle" ? "IDLE 实时" : account.syncMode === "polling" ? `每 ${pollIntervalSeconds} 秒轮询` : "正在检测同步模式"}</span></div></div>
+              <div className={styles.accountIdentity}><span className={styles.mailAvatar}><Mail size={18} /></span><div><strong>{account.email}</strong><span>{account.aliases.length} 个别名 · {PROVIDERS.find((provider) => provider.value === account.provider)?.label ?? account.provider} · {account.imap.host}</span><span>{account.syncMode === "idle" ? "IDLE 实时" : account.syncMode === "polling" ? `每 ${pollIntervalSeconds} 秒轮询` : "正在检测同步模式"}</span></div></div>
               <Status status={syncing ? "connecting" : account.status} />
               <div className={styles.accountTime}><span>最近同步</span><strong>{formatDate(account.lastSyncedAt, true)}</strong>{account.lastError && <small title={account.lastError}>{account.lastError}</small>}</div>
               <div className={styles.rowActions}>
@@ -271,27 +276,46 @@ function Status({ status }: { status: Account["status"] }) {
 
 function AccountDialog({ open, account, api, onOpenChange, onSaved }: { open: boolean; account: Account | null; api: ApiClient; onOpenChange: (open: boolean) => void; onSaved: (message: string) => void }) {
   const [email, setEmail] = useState(""); const [password, setPassword] = useState("");
+  const [aliases, setAliases] = useState<string[]>([]); const [aliasInput, setAliasInput] = useState("");
   const [provider, setProvider] = useState<ProviderId>("auto"); const [host, setHost] = useState("");
   const [port, setPort] = useState("993"); const [secure, setSecure] = useState(true);
   const [advanced, setAdvanced] = useState(false); const [busy, setBusy] = useState(false); const [error, setError] = useState("");
 
   useEffect(() => {
     if (!open) return;
-    setEmail(account?.email ?? ""); setPassword(""); setProvider(account?.provider ?? "auto");
+    setEmail(account?.email ?? ""); setPassword(""); setAliases(account?.aliases ?? []); setAliasInput(""); setProvider(account?.provider ?? "auto");
     setHost(account?.imap.host ?? ""); setPort(String(account?.imap.port ?? 993)); setSecure(account?.imap.secure ?? true);
     setAdvanced(account?.provider === "custom"); setError("");
   }, [open, account]);
 
+  const addAliases = (raw = aliasInput): boolean => {
+    const values = raw.split(/[\n,]/u).map((value) => value.trim().toLowerCase()).filter(Boolean);
+    if (!values.length) return true;
+    const invalid = values.find((value) => !/^[^\s@]+@[^\s@]+\.[^\s@]+$/u.test(value));
+    if (invalid) { setError(`别名邮箱格式无效：${invalid}`); return false; }
+    if (values.some((value) => value === email.trim().toLowerCase())) { setError("别名邮箱不能与主邮箱相同"); return false; }
+    const next = [...aliases, ...values];
+    if (new Set(next).size !== next.length) { setError("别名邮箱不能重复"); return false; }
+    if (next.length > 50) { setError("最多配置 50 个别名邮箱"); return false; }
+    setAliases(next); setAliasInput(""); setError("");
+    return true;
+  };
+
   const submit = async (event: FormEvent) => {
     event.preventDefault(); setBusy(true); setError("");
+    let submittedAliases = aliases;
+    if (aliasInput.trim()) {
+      if (!addAliases()) { setBusy(false); return; }
+      submittedAliases = [...aliases, ...aliasInput.split(/[\n,]/u).map((value) => value.trim().toLowerCase()).filter(Boolean)];
+    }
     const imap = { provider, ...(advanced && host ? { host } : {}), ...(advanced ? { port: Number(port), secure } : {}) };
     try {
       if (account) {
-        const body: AccountUpdate = { email, imap, ...(password ? { password } : {}) };
+        const body: AccountUpdate = { email, aliases: submittedAliases, imap, ...(password ? { password } : {}) };
         await api.request(`/accounts/${account.id}`, { method: "PATCH", body: JSON.stringify(body) });
         onSaved("邮箱账号已更新");
       } else {
-        const body: AccountInput = { email, password, imap };
+        const body: AccountInput = { email, aliases: submittedAliases, password, imap };
         await api.request("/accounts", { method: "POST", body: JSON.stringify(body) });
         onSaved("邮箱账号已添加");
       }
@@ -303,6 +327,7 @@ function AccountDialog({ open, account, api, onOpenChange, onSaved }: { open: bo
     <div className={styles.dialogHeader}><div><Dialog.Title>{account ? "编辑邮箱" : "添加邮箱"}</Dialog.Title><Dialog.Description>{account ? "留空密码将保留现有授权码" : "使用邮箱密码或服务商授权码连接"}</Dialog.Description></div><Dialog.Close asChild><IconButton label="关闭"><X size={18} /></IconButton></Dialog.Close></div>
     <form className={styles.accountForm} onSubmit={submit}>
       <div className={styles.field}><label htmlFor="account-email">邮箱地址</label><input id="account-email" type="email" value={email} onChange={(event) => setEmail(event.target.value)} required autoFocus /></div>
+      <div className={styles.field}><label htmlFor="account-alias">别名邮箱</label><div className={styles.aliasInput}><input id="account-alias" type="email" value={aliasInput} onChange={(event) => setAliasInput(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === ",") { event.preventDefault(); addAliases(); } }} placeholder="alias@example.com" /><IconButton type="button" label="添加别名" onClick={() => addAliases()}><Plus size={17} /></IconButton></div>{aliases.length > 0 && <div className={styles.aliasList}>{aliases.map((alias) => <span key={alias}>{alias}<button type="button" aria-label={`移除别名 ${alias}`} onClick={() => setAliases((values) => values.filter((value) => value !== alias))}><X size={14} /></button></span>)}</div>}</div>
       <div className={styles.field}><label htmlFor="account-password">密码 / 授权码</label><input id="account-password" type="password" value={password} onChange={(event) => setPassword(event.target.value)} required={!account} autoComplete="new-password" placeholder={account ? "留空表示不修改" : "请输入授权码"} /></div>
       <div className={styles.field}><label htmlFor="account-provider">邮箱服务商</label><select id="account-provider" value={provider} onChange={(event) => { const value = event.target.value as ProviderId; setProvider(value); if (value === "custom") setAdvanced(true); }}>{PROVIDERS.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select></div>
       <button type="button" className={styles.disclosure} onClick={() => setAdvanced((value) => !value)} aria-expanded={advanced}><SlidersHorizontal size={16} />高级 IMAP 配置<span>{advanced ? "收起" : "展开"}</span></button>
@@ -367,7 +392,7 @@ function MessagesPage({ api, accounts, revision, onNotice }: { api: ApiClient; a
       <div className={styles.messageList} aria-busy={loading}>
         {loading ? <div className={styles.centerState}><Spinner /></div> : items.length === 0 ? <EmptyState icon={<SearchX size={27} />} title="没有符合条件的邮件" /> : items.map((message) => <button key={message.id} className={`${styles.messageRow} ${selected === message.id ? styles.messageSelected : ""} ${message.read ? styles.messageRead : ""}`} onClick={() => void openMessage(message)}>
           <span className={styles.unreadDot} aria-label={message.read ? "已读" : "未读"} />
-          <span className={styles.messageMain}><span className={styles.messageMeta}><strong>{senderLabel(message)}</strong><time>{formatDate(message.displayTime, true)}</time></span><span className={styles.messageSubject}>{message.subject}</span><span className={styles.messagePreview}>{message.preview || "无正文预览"}</span></span>
+          <span className={styles.messageMain}><span className={styles.messageMeta}><strong>{senderLabel(message)}</strong><time>{formatDate(message.displayTime, true)}</time></span><span className={styles.messageSubject}>{message.subject}</span>{message.labels.length > 0 && <MessageLabels labels={message.labels} compact />}<span className={styles.messagePreview}>{message.preview || "无正文预览"}</span></span>
           <span className={styles.messageFlags}>{message.folder === "junk" && <Archive size={14} aria-label="垃圾箱" />}{message.hasAttachments && <Paperclip size={14} aria-label="包含附件" />}</span>
         </button>)}
       </div>
@@ -380,15 +405,119 @@ function MessagesPage({ api, accounts, revision, onNotice }: { api: ApiClient; a
   </section>;
 }
 
-function MessageDetailView({ message, onBack, onMark }: { message: MessageDetail; onBack: () => void; onMark: (read: boolean) => void }) {
+export function MessageDetailView({ message, onBack, onMark }: { message: MessageDetail; onBack: () => void; onMark: (read: boolean) => void }) {
   const addressList = (values: MessageDetail["to"]) => values.map((item) => item.name ? `${item.name} <${item.address}>` : item.address).join(", ") || "—";
-  const srcDoc = message.html ? `<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'"><style>body{font:14px/1.65 -apple-system,BlinkMacSystemFont,'PingFang SC',sans-serif;color:#1d1d1f;margin:0;padding:20px;overflow-wrap:anywhere}a{color:#0066cc}table{border-collapse:collapse;max-width:100%}td,th{border:1px solid #d2d2d7;padding:6px}pre{white-space:pre-wrap}</style></head><body>${message.html}</body></html>` : "";
+  const [remoteImagesForMessage, setRemoteImagesForMessage] = useState<string | null>(null);
+  const [pendingLink, setPendingLink] = useState<{ url: string; label: string } | null>(null);
+  const [unsubscribePending, setUnsubscribePending] = useState(false);
+  const [copyState, setCopyState] = useState<"copied" | "error" | null>(null);
+  const hasRemoteImages = useMemo(() => hasRemoteImageReferences(message.html ?? ""), [message.html]);
+  const remoteImagesLoaded = remoteImagesForMessage === message.id;
+  const srcDoc = useMemo(() => message.html ? buildMessageSrcDoc(message.html, remoteImagesLoaded) : "", [message.html, remoteImagesLoaded]);
+  useEffect(() => { setPendingLink(null); setUnsubscribePending(false); setCopyState(null); }, [message.id]);
+  const handleFrameLoad = (frame: HTMLIFrameElement) => {
+    frame.contentDocument?.addEventListener("click", (event) => {
+      const anchor = (event.target as Element | null)?.closest?.("a[data-safe-href]") as HTMLAnchorElement | null;
+      if (!anchor) return;
+      event.preventDefault();
+      event.stopPropagation();
+      const url = safeMessageLinkUrl(anchor.getAttribute("data-safe-href") ?? "");
+      if (url) setPendingLink({ url, label: (anchor.textContent?.replace(/\s+/g, " ").trim() || url).slice(0, 160) });
+    });
+  };
+  const openPendingLink = () => {
+    const url = pendingLink ? safeMessageLinkUrl(pendingLink.url) : null;
+    if (url) window.open(url, "_blank", "noopener,noreferrer");
+    setPendingLink(null);
+  };
+  const copyVerificationCode = async () => {
+    if (!message.verificationCode || !navigator.clipboard) { setCopyState("error"); return; }
+    try { await navigator.clipboard.writeText(message.verificationCode); setCopyState("copied"); }
+    catch { setCopyState("error"); }
+  };
+  const openUnsubscribeLink = () => {
+    if (unsubscribeUrl) window.open(unsubscribeUrl, "_blank", "noopener,noreferrer");
+    setUnsubscribePending(false);
+  };
+  const unsubscribeUrl = safeHttpLinkUrl(message.unsubscribeUrl ?? "");
+  const unsubscribeHost = unsubscribeUrl ? new URL(unsubscribeUrl).host : "";
   return <article className={styles.messageDetail}>
-    <div className={styles.detailToolbar}><IconButton label="返回邮件列表" className={styles.backButton} onClick={onBack}><ArrowLeft size={18} /></IconButton><span className={styles.detailFolder}>{message.folder === "junk" ? "垃圾箱" : "收件箱"}</span><IconButton label={message.read ? "标记为未读" : "标记为已读"} onClick={() => onMark(!message.read)}>{message.read ? <Mail size={17} /> : <MailCheck size={17} />}</IconButton></div>
+    <div className={styles.detailToolbar}><IconButton label="返回邮件列表" className={styles.backButton} onClick={onBack}><ArrowLeft size={18} /></IconButton><span className={styles.detailFolder}>{message.folder === "junk" ? "垃圾箱" : "收件箱"}</span>{hasRemoteImages && <Button type="button" variant="quiet" className={styles.remoteImageButton} disabled={remoteImagesLoaded} onClick={() => setRemoteImagesForMessage(message.id)}>{remoteImagesLoaded ? <Check size={15} /> : <ImageIcon size={15} />}{remoteImagesLoaded ? "已加载" : "加载图片"}</Button>}<IconButton label={message.read ? "标记为未读" : "标记为已读"} onClick={() => onMark(!message.read)}>{message.read ? <Mail size={17} /> : <MailCheck size={17} />}</IconButton></div>
+    {(message.labels.length > 0 || message.verificationCode || unsubscribeUrl) && <div className={styles.detailActions}><MessageLabels labels={message.labels} />{message.verificationCode && <Button type="button" variant="quiet" onClick={() => void copyVerificationCode()}><Copy size={15} />{copyState === "copied" ? "已复制" : copyState === "error" ? "复制失败" : `复制 ${message.verificationCode}`}</Button>}{unsubscribeUrl && <Button type="button" variant="quiet" onClick={() => setUnsubscribePending(true)}><ExternalLink size={15} />快速退订</Button>}<span className={styles.srOnly} role="status" aria-live="polite">{copyState === "copied" ? "验证码已复制" : copyState === "error" ? "验证码复制失败" : ""}</span></div>}
     <header className={styles.detailHeader}><h2>{message.subject}</h2><time>{formatDate(message.displayTime)}</time><dl><div><dt>发件人</dt><dd>{addressList(message.from)}</dd></div><div><dt>收件人</dt><dd>{addressList(message.to)}</dd></div>{message.cc.length > 0 && <div><dt>抄送</dt><dd>{addressList(message.cc)}</dd></div>}{message.attachments.length > 0 && <div><dt>附件</dt><dd className={styles.attachments}>{message.attachments.map((name) => <span key={name}><Paperclip size={13} />{name}</span>)}</dd></div>}</dl></header>
     <div className={styles.bodyDivider} />
-    {message.html ? <iframe title="邮件正文" sandbox="" className={styles.mailBodyFrame} srcDoc={srcDoc} /> : <pre className={styles.textBody}>{message.text || "（无正文）"}</pre>}
+    {message.html ? <iframe title="邮件正文" sandbox="allow-same-origin" className={styles.mailBodyFrame} srcDoc={srcDoc} onLoad={(event) => handleFrameLoad(event.currentTarget)} /> : <pre className={styles.textBody}>{message.text || "（无正文）"}</pre>}
+    <ConfirmDialog open={Boolean(pendingLink)} title={`确认打开“${pendingLink?.label ?? "此链接"}”？`} description={pendingLink?.url ?? ""} descriptionClassName={styles.linkConfirmUrl} confirmLabel="打开链接" onOpenChange={(open) => { if (!open) setPendingLink(null); }} onConfirm={openPendingLink} />
+    <ConfirmDialog open={unsubscribePending} title={`确认前往 ${unsubscribeHost || "外部网站"} 退订？`} description={unsubscribeUrl ?? ""} descriptionClassName={styles.linkConfirmUrl} confirmLabel="打开退订链接" onOpenChange={setUnsubscribePending} onConfirm={openUnsubscribeLink} />
   </article>;
+}
+
+function MessageLabels({ labels, compact = false }: { labels: MessageLabel[]; compact?: boolean }) {
+  return <span className={`${styles.messageLabels} ${compact ? styles.messageLabelsCompact : ""}`}>{labels.map((label) => {
+    const item = MESSAGE_LABELS[label];
+    if (!item) return null;
+    const Icon = item.icon;
+    return <span key={label} data-label={label}><Icon size={compact ? 11 : 13} />{item.text}</span>;
+  })}</span>;
+}
+
+function messageTemplate(html: string): HTMLTemplateElement {
+  const template = document.createElement("template");
+  template.innerHTML = html;
+  return template;
+}
+
+function safeMessageLinkUrl(value: string): string | null {
+  try {
+    const parsed = new URL(value);
+    return ["http:", "https:", "mailto:"].includes(parsed.protocol) ? parsed.href : null;
+  } catch {
+    return null;
+  }
+}
+
+function safeHttpLinkUrl(value: string): string | null {
+  try {
+    const parsed = new URL(value);
+    return parsed.protocol === "http:" || parsed.protocol === "https:" ? parsed.href : null;
+  } catch {
+    return null;
+  }
+}
+
+export function hasRemoteImageReferences(html: string): boolean {
+  const template = messageTemplate(html);
+  if ([...template.content.querySelectorAll("img")].some((image) => /^(https?:)?\/\//i.test(image.getAttribute("data-remote-src") ?? image.getAttribute("src") ?? ""))) return true;
+  return [...template.content.querySelectorAll("style, [style]")].some((element) => /url\(\s*["']?https?:\/\//i.test(element.tagName === "STYLE" ? element.textContent ?? "" : element.getAttribute("style") ?? ""));
+}
+
+function prepareMessageBody(html: string, loadRemoteImages: boolean): string {
+  const template = messageTemplate(html);
+  for (const anchor of template.content.querySelectorAll("a")) {
+    const url = safeMessageLinkUrl(anchor.getAttribute("data-safe-href") ?? anchor.getAttribute("href") ?? "");
+    anchor.removeAttribute("href");
+    anchor.removeAttribute("target");
+    anchor.removeAttribute("rel");
+    anchor.removeAttribute("data-safe-href");
+    if (url) {
+      anchor.setAttribute("href", "#");
+      anchor.setAttribute("data-safe-href", url);
+    }
+  }
+  if (loadRemoteImages) {
+    for (const image of template.content.querySelectorAll("img[data-remote-src]")) {
+      const src = image.getAttribute("data-remote-src");
+      if (src && /^https?:\/\//i.test(src)) image.setAttribute("src", src);
+    }
+  }
+  return template.innerHTML;
+}
+
+export function buildMessageSrcDoc(html: string, loadRemoteImages = false): string {
+  const imageSources = loadRemoteImages ? "data: http: https:" : "data:";
+  const csp = `default-src 'none'; script-src 'none'; style-src 'unsafe-inline'; img-src ${imageSources}; font-src 'none'; media-src 'none'; frame-src 'none'; child-src 'none'; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'`;
+  const body = prepareMessageBody(html, loadRemoteImages);
+  return `<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="${csp}"><meta name="referrer" content="no-referrer"><style>html,body{min-height:100%;margin:0}body{padding:20px;overflow-wrap:anywhere}img,table{max-width:100%}pre{white-space:pre-wrap}</style></head><body>${body}</body></html>`;
 }
 
 function SettingsPage({ api, onNotice }: { api: ApiClient; onNotice: (notice: { kind: "success" | "error"; text: string }) => void }) {
@@ -400,6 +529,6 @@ function SettingsPage({ api, onNotice }: { api: ApiClient; onNotice: (notice: { 
   return <section className={styles.settingsSection}><div className={styles.sectionToolbar}><div><h2>同步与缓存</h2><p>全局邮件策略</p></div></div><form className={styles.settingsForm} onSubmit={save}><div><label htmlFor="max-messages">每个账号最多保留</label><div className={styles.numberControl}><input id="max-messages" type="number" min="1" max="10000" value={value} onChange={(event) => setValue(event.target.value)} /><span>封邮件</span></div><p>收件箱和垃圾箱合计计算，超出后删除最旧的本地缓存。</p></div><div><label htmlFor="poll-interval">无 IDLE 时轮询间隔</label><div className={styles.numberControl}><input id="poll-interval" type="number" min="5" max="3600" value={interval} onChange={(event) => setIntervalValue(event.target.value)} /><span>秒</span></div><p>支持 IDLE 的邮箱保持实时长连接，此设置只用于不支持 IDLE 的服务器。</p></div><Button variant="primary" disabled={busy || unchanged}>{busy ? <Spinner label="正在保存" /> : "保存设置"}</Button></form></section>;
 }
 
-function ConfirmDialog({ open, title, description, confirmLabel, danger = false, onOpenChange, onConfirm }: { open: boolean; title: string; description: string; confirmLabel: string; danger?: boolean; onOpenChange: (open: boolean) => void; onConfirm: () => void }) {
-  return <AlertDialog.Root open={open} onOpenChange={onOpenChange}><AlertDialog.Portal><AlertDialog.Overlay className={styles.overlay} /><AlertDialog.Content className={styles.confirmDialog}><AlertDialog.Title>{title}</AlertDialog.Title><AlertDialog.Description>{description}</AlertDialog.Description><div className={styles.dialogFooter}><AlertDialog.Cancel asChild><Button>取消</Button></AlertDialog.Cancel><AlertDialog.Action asChild><Button variant={danger ? "danger" : "primary"} onClick={onConfirm}>{confirmLabel}</Button></AlertDialog.Action></div></AlertDialog.Content></AlertDialog.Portal></AlertDialog.Root>;
+function ConfirmDialog({ open, title, description, descriptionClassName, confirmLabel, danger = false, onOpenChange, onConfirm }: { open: boolean; title: string; description: string; descriptionClassName?: string; confirmLabel: string; danger?: boolean; onOpenChange: (open: boolean) => void; onConfirm: () => void }) {
+  return <AlertDialog.Root open={open} onOpenChange={onOpenChange}><AlertDialog.Portal><AlertDialog.Overlay className={styles.overlay} /><AlertDialog.Content className={styles.confirmDialog}><AlertDialog.Title>{title}</AlertDialog.Title><AlertDialog.Description className={descriptionClassName}>{description}</AlertDialog.Description><div className={styles.dialogFooter}><AlertDialog.Cancel asChild><Button>取消</Button></AlertDialog.Cancel><AlertDialog.Action asChild><Button variant={danger ? "danger" : "primary"} onClick={onConfirm}>{confirmLabel}</Button></AlertDialog.Action></div></AlertDialog.Content></AlertDialog.Portal></AlertDialog.Root>;
 }

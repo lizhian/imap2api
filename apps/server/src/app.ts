@@ -17,14 +17,17 @@ const imapSchema = z.object({
   port: z.number().int().min(1).max(65535).optional(),
   secure: z.boolean().optional()
 }).optional();
+const aliasesSchema = z.array(z.string().trim().pipe(z.email().max(320)).transform((value) => value.toLowerCase())).max(50).optional();
 const accountCreateSchema = z.object({
   email: z.email().max(320),
   password: z.string().min(1).max(4096),
+  aliases: aliasesSchema,
   imap: imapSchema
 });
 const accountUpdateSchema = z.object({
   email: z.email().max(320).optional(),
   password: z.string().min(1).max(4096).optional(),
+  aliases: aliasesSchema,
   imap: imapSchema
 }).refine((value) => Object.keys(value).length > 0, "至少提供一个修改字段");
 const messageListSchema = z.object({
@@ -95,8 +98,19 @@ export async function buildApp(config: AppConfig, dependencies: AppDependencies 
       return reply.code(201).send(account);
     });
     api.patch<{ Params: { id: string } }>("/accounts/:id", async (request, reply) => {
+      const previous = db.getAccount(request.params.id);
+      if (!previous) throw new AccountNotFoundError();
       const account = db.updateAccount(request.params.id, accountUpdateSchema.parse(request.body));
       if (!account) throw new AccountNotFoundError();
+      if (previous.email !== account.email || JSON.stringify(previous.aliases) !== JSON.stringify(account.aliases)) {
+        const storedAccount = db.getAccount(account.id)!;
+        for (const reclassified of db.reclassifyAccountMessages(storedAccount)) {
+          events.publish({
+            type: "messages.changed", accountId: account.id, folder: reclassified.folder,
+            addedIds: [], updatedIds: reclassified.ids, deletedIds: [], occurredAt: new Date().toISOString()
+          });
+        }
+      }
       await imap.restartAccount(account.id);
       return account;
     });

@@ -28,11 +28,17 @@ describe("HTTP API", () => {
     const created = await app.inject({
       method: "POST", url: "/api/v1/accounts",
       headers: { authorization: `Bearer ${token}` },
-      payload: { email: "api@gmail.com", password: "top-secret" }
+      payload: { email: "api@gmail.com", aliases: [" Alias@Gmail.com "], password: "top-secret" }
     });
     expect(created.statusCode).toBe(201);
     expect(created.body).not.toContain("top-secret");
-    expect(created.json()).toMatchObject({ email: "api@gmail.com", hasCredential: true });
+    expect(created.json()).toMatchObject({ email: "api@gmail.com", aliases: ["alias@gmail.com"], hasCredential: true });
+    const invalidAlias = await app.inject({
+      method: "POST", url: "/api/v1/accounts", headers: { authorization: `Bearer ${token}` },
+      payload: { email: "other@gmail.com", aliases: ["other@gmail.com"], password: "top-secret" }
+    });
+    expect(invalidAlias.statusCode).toBe(400);
+    expect(invalidAlias.json()).toMatchObject({ error: { code: "VALIDATION_ERROR" } });
     await app.close();
   });
 
@@ -94,6 +100,38 @@ describe("HTTP API", () => {
     const end = await reader.read();
     expect(end.done).toBe(true);
     await vi.waitFor(() => expect(events.subscriberCount).toBe(0));
+  });
+
+  it("reclassifies cached messages and publishes metadata when aliases change", async () => {
+    const appConfig = config();
+    const db = new AppDatabase(appConfig.databasePath, token);
+    const account = db.createAccount({ email: "main@gmail.com", password: "secret" });
+    db.upsertMessage({
+      accountId: account.id, folder: "inbox", mailboxPath: "INBOX", uid: 1, uidValidity: "1", read: false,
+      displayTime: "2026-01-01T00:00:00.000Z",
+      content: { subject: "Alias", from: [], to: [{ address: "alias@gmail.com" }], cc: [], preview: "", text: "", html: null, attachments: [], labels: ["forwarded"] }
+    });
+    const messageId = db.listMessages({ accountId: account.id, view: "all", limit: 50 }).items[0]!.id;
+    const events = new EventBroker();
+    const publish = vi.spyOn(events, "publish");
+    const imap = new ImapService(db, events);
+    vi.spyOn(imap, "start").mockImplementation(() => undefined);
+    vi.spyOn(imap, "restartAccount").mockResolvedValue(undefined);
+    const app = await buildApp(appConfig, { db, imap, events });
+
+    const response = await app.inject({
+      method: "PATCH", url: `/api/v1/accounts/${account.id}`,
+      headers: { authorization: `Bearer ${token}` }, payload: { aliases: ["alias@gmail.com"] }
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ aliases: ["alias@gmail.com"] });
+    expect(db.listMessages({ accountId: account.id, view: "all", limit: 50 }).items[0]!.labels).toEqual([]);
+    expect(publish).toHaveBeenCalledWith(expect.objectContaining({
+      type: "messages.changed", accountId: account.id, folder: "inbox", updatedIds: [messageId]
+    }));
+
+    await app.close();
+    db.close();
   });
 
   it("uses consistent status codes for missing resources, partial updates, and internal failures", async () => {

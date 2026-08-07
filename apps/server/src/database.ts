@@ -9,6 +9,7 @@ import type {
   Address,
   ConnectionStatus,
   MessageDetail,
+  MessageLabel,
   MessageListResponse,
   MessageSummary,
   MessageView,
@@ -18,14 +19,17 @@ import type {
 import { CryptoService } from "./crypto.js";
 import { resolveImapConfig, type ResolvedImapConfig } from "./providers.js";
 import { InputError } from "./errors.js";
+import { classifyMail, type MailClassificationResult } from "./mail-classifier.js";
 
 interface AccountConfigPayload {
   email: string;
+  aliases?: string[];
   imap: ResolvedImapConfig;
 }
 
-export interface StoredAccount extends AccountConfigPayload {
+export interface StoredAccount extends Omit<AccountConfigPayload, "aliases"> {
   id: string;
+  aliases: string[];
   password: string;
   status: ConnectionStatus;
   syncMode: SyncMode | null;
@@ -34,6 +38,8 @@ export interface StoredAccount extends AccountConfigPayload {
 }
 
 export interface StoredMessageContent {
+  htmlPolicyVersion?: number;
+  classificationVersion?: number;
   subject: string;
   from: Address[];
   to: Address[];
@@ -42,6 +48,9 @@ export interface StoredMessageContent {
   text: string;
   html: string | null;
   attachments: string[];
+  labels?: MessageLabel[];
+  verificationCode?: string | null;
+  unsubscribeUrl?: string | null;
 }
 
 export interface SyncedMessage {
@@ -208,7 +217,9 @@ export class AppDatabase {
     const config = this.crypto.decrypt<AccountConfigPayload>(asBuffer(row.config_enc));
     return {
       id: row.id,
-      ...config,
+      email: config.email,
+      aliases: config.aliases ?? [],
+      imap: config.imap,
       password: this.crypto.decrypt<string>(asBuffer(row.credential_enc)),
       status: row.status,
       syncMode: row.sync_mode,
@@ -221,11 +232,12 @@ export class AppDatabase {
     const now = new Date().toISOString();
     const id = randomUUID();
     const email = input.email.trim().toLowerCase();
+    const aliases = normalizeAliases(email, input.aliases ?? []);
     const imap = resolveImapConfig(email, input.imap);
     this.raw.prepare(`
       INSERT INTO accounts(id, email_hash, config_enc, credential_enc, status, created_at, updated_at)
       VALUES (?, ?, ?, ?, 'pending', ?, ?)
-    `).run(id, this.crypto.fingerprint(email), this.crypto.encrypt({ email, imap }), this.crypto.encrypt(input.password), now, now);
+    `).run(id, this.crypto.fingerprint(email), this.crypto.encrypt({ email, aliases, imap }), this.crypto.encrypt(input.password), now, now);
     return this.toPublicAccount(this.raw.prepare("SELECT * FROM accounts WHERE id = ?").get(id) as AccountRow);
   }
 
@@ -233,13 +245,14 @@ export class AppDatabase {
     const current = this.getAccount(id);
     if (!current) return null;
     const email = (input.email ?? current.email).trim().toLowerCase();
+    const aliases = normalizeAliases(email, input.aliases ?? current.aliases);
     const imap = resolveImapConfig(email, input.imap ?? current.imap);
     const now = new Date().toISOString();
     const credential = input.password ? this.crypto.encrypt(input.password) : this.crypto.encrypt(current.password);
     this.raw.prepare(`
       UPDATE accounts SET email_hash = ?, config_enc = ?, credential_enc = ?, status = 'pending',
         sync_mode = NULL, error_enc = NULL, updated_at = ? WHERE id = ?
-    `).run(this.crypto.fingerprint(email), this.crypto.encrypt({ email, imap }), credential, now, id);
+    `).run(this.crypto.fingerprint(email), this.crypto.encrypt({ email, aliases, imap }), credential, now, id);
     return this.toPublicAccount(this.raw.prepare("SELECT * FROM accounts WHERE id = ?").get(id) as AccountRow);
   }
 
@@ -279,10 +292,46 @@ export class AppDatabase {
     return ids;
   }
 
-  getKnownMessage(accountId: string, kind: "inbox" | "junk", uidValidity: string, uid: number): { id: string; read: boolean } | null {
-    const row = this.raw.prepare(`SELECT id, is_read FROM messages
-      WHERE account_id = ? AND folder_kind = ? AND uid_validity = ? AND uid = ?`).get(accountId, kind, uidValidity, uid) as { id: string; is_read: number } | undefined;
-    return row ? { id: row.id, read: Boolean(row.is_read) } : null;
+  getKnownMessage(accountId: string, kind: "inbox" | "junk", uidValidity: string, uid: number): { id: string; read: boolean; htmlPolicyVersion: number; classificationVersion: number } | null {
+    const row = this.raw.prepare(`SELECT id, is_read, content_enc FROM messages
+      WHERE account_id = ? AND folder_kind = ? AND uid_validity = ? AND uid = ?`).get(accountId, kind, uidValidity, uid) as { id: string; is_read: number; content_enc: Buffer } | undefined;
+    if (!row) return null;
+    const content = this.crypto.decrypt<StoredMessageContent>(asBuffer(row.content_enc));
+    return {
+      id: row.id, read: Boolean(row.is_read), htmlPolicyVersion: content.htmlPolicyVersion ?? 0,
+      classificationVersion: content.classificationVersion ?? 0
+    };
+  }
+
+  reclassifyMessage(id: string, account: StoredAccount): boolean {
+    const row = this.raw.prepare("SELECT content_enc FROM messages WHERE id = ?").get(id) as { content_enc: Buffer } | undefined;
+    if (!row) return false;
+    const content = this.crypto.decrypt<StoredMessageContent>(asBuffer(row.content_enc));
+    const classification = classifyStoredContent(account, content);
+    const changed = classificationChanged(content, classification);
+    this.raw.prepare("UPDATE messages SET content_enc = ?, updated_at = ? WHERE id = ?")
+      .run(this.crypto.encrypt({ ...content, ...classification }), new Date().toISOString(), id);
+    return changed;
+  }
+
+  reclassifyAccountMessages(account: StoredAccount): Array<{ folder: "inbox" | "junk"; ids: string[] }> {
+    return this.raw.transaction(() => {
+      const rows = this.raw.prepare("SELECT id, folder_kind, content_enc FROM messages WHERE account_id = ?")
+        .all(account.id) as Array<Pick<MessageRow, "id" | "folder_kind" | "content_enc">>;
+      const groups: Array<{ folder: "inbox" | "junk"; ids: string[] }> = [];
+      for (const row of rows) {
+        const content = this.crypto.decrypt<StoredMessageContent>(asBuffer(row.content_enc));
+        const classification = classifyStoredContent(account, content);
+        const changed = classificationChanged(content, classification);
+        this.raw.prepare("UPDATE messages SET content_enc = ?, updated_at = ? WHERE id = ?")
+          .run(this.crypto.encrypt({ ...content, ...classification }), new Date().toISOString(), row.id);
+        if (!changed) continue;
+        const group = groups.find((item) => item.folder === row.folder_kind);
+        if (group) group.ids.push(row.id);
+        else groups.push({ folder: row.folder_kind, ids: [row.id] });
+      }
+      return groups;
+    })();
   }
 
   updateKnownRead(id: string, read: boolean): void {
@@ -379,7 +428,10 @@ export class AppDatabase {
     const account = this.toPublicAccount(this.raw.prepare("SELECT * FROM accounts WHERE id = ?").get(row.account_id) as AccountRow);
     const summary = this.toMessageSummary(row, account.email);
     const content = this.crypto.decrypt<StoredMessageContent>(asBuffer(row.content_enc));
-    return { ...summary, to: content.to, cc: content.cc, attachments: content.attachments, text: content.text, html: content.html };
+    return {
+      ...summary, to: content.to, cc: content.cc, attachments: content.attachments, text: content.text, html: content.html,
+      verificationCode: content.verificationCode ?? null, unsubscribeUrl: content.unsubscribeUrl ?? null
+    };
   }
 
   getMessageTransport(id: string): { accountId: string; folder: "inbox" | "junk"; mailboxPath: string; uid: number } | null {
@@ -399,7 +451,7 @@ export class AppDatabase {
   private toPublicAccount(row: AccountRow): Account {
     const config = this.crypto.decrypt<AccountConfigPayload>(asBuffer(row.config_enc));
     return {
-      id: row.id, email: config.email, provider: config.imap.provider, imap: config.imap,
+      id: row.id, email: config.email, aliases: config.aliases ?? [], provider: config.imap.provider, imap: config.imap,
       hasCredential: true, status: row.status, syncMode: row.sync_mode, lastSyncedAt: row.last_sync_at,
       lastError: row.error_enc ? this.crypto.decrypt<string>(asBuffer(row.error_enc)) : null,
       createdAt: row.created_at, updatedAt: row.updated_at
@@ -411,7 +463,8 @@ export class AppDatabase {
     return {
       id: row.id, accountId: row.account_id, accountEmail, subject: content.subject,
       from: content.from, preview: content.preview, displayTime: row.display_time,
-      folder: row.folder_kind, read: Boolean(row.is_read), hasAttachments: Boolean(row.has_attachments)
+      folder: row.folder_kind, read: Boolean(row.is_read), hasAttachments: Boolean(row.has_attachments),
+      labels: content.labels ?? []
     };
   }
 
@@ -440,4 +493,28 @@ export class AppDatabase {
     }
     this.raw.pragma("user_version = 2");
   }
+}
+
+function normalizeAliases(email: string, values: string[]): string[] {
+  if (values.length > 50) throw new InputError("最多配置 50 个别名邮箱");
+  const aliases = values.map((value) => value.trim().toLowerCase());
+  if (aliases.some((value) => value.length > 320 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/u.test(value))) {
+    throw new InputError("别名邮箱格式无效");
+  }
+  if (aliases.some((value) => value === email)) throw new InputError("别名邮箱不能与主邮箱相同");
+  if (new Set(aliases).size !== aliases.length) throw new InputError("别名邮箱不能重复");
+  return aliases;
+}
+
+function classifyStoredContent(account: StoredAccount, content: StoredMessageContent): MailClassificationResult {
+  return classifyMail({
+    accountEmail: account.email, aliases: account.aliases, to: content.to, cc: content.cc,
+    text: content.text, html: content.html
+  });
+}
+
+function classificationChanged(content: StoredMessageContent, next: MailClassificationResult): boolean {
+  return JSON.stringify(content.labels ?? []) !== JSON.stringify(next.labels)
+    || (content.verificationCode ?? null) !== next.verificationCode
+    || (content.unsubscribeUrl ?? null) !== next.unsubscribeUrl;
 }

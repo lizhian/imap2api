@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { App } from "./App";
+import type { MessageDetail } from "@imap2api/shared";
+import { App, buildMessageSrcDoc, hasRemoteImageReferences, MessageDetailView } from "./App";
 
 afterEach(() => { cleanup(); sessionStorage.clear(); location.hash = ""; vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
@@ -24,19 +25,29 @@ describe("App authentication", () => {
   it("shows the persistent connection mode for an account", async () => {
     location.hash = "accounts";
     sessionStorage.setItem("imap2api-token", "valid-token");
-    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       const json = async () => url.endsWith("/accounts") ? [{
-        id: "11111111-1111-4111-8111-111111111111", email: "mail@qq.com", provider: "qq",
+        id: "11111111-1111-4111-8111-111111111111", email: "mail@qq.com", aliases: ["alias@qq.com"], provider: "qq",
         imap: { host: "imap.qq.com", port: 993, secure: true }, hasCredential: true,
         status: "connected", syncMode: "idle", lastSyncedAt: "2026-08-07T00:00:00.000Z",
         lastError: null, createdAt: "2026-08-07T00:00:00.000Z", updatedAt: "2026-08-07T00:00:00.000Z"
       }] : url.endsWith("/settings") ? { maxMessagesPerAccount: 100, pollIntervalSeconds: 10 } : { ok: true };
       return { ok: true, status: 200, body: null, json } as Response;
-    }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
 
     render(<App />);
     expect(await screen.findByText("IDLE 实时")).toBeInTheDocument();
+    expect(screen.getByText(/1 个别名/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "编辑账号" }));
+    fireEvent.change(await screen.findByLabelText("别名邮箱"), { target: { value: "second@qq.com" } });
+    fireEvent.click(screen.getByRole("button", { name: "添加别名" }));
+    fireEvent.click(screen.getByRole("button", { name: "移除别名 alias@qq.com" }));
+    fireEvent.click(screen.getByRole("button", { name: "保存账号" }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(expect.stringMatching(/\/accounts\//), expect.objectContaining({
+      method: "PATCH", body: expect.stringContaining('"aliases":["second@qq.com"]')
+    })));
   });
 
   it("loads and saves both global synchronization settings", async () => {
@@ -64,5 +75,106 @@ describe("App authentication", () => {
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/v1/settings", expect.objectContaining({
       method: "PATCH", body: JSON.stringify({ maxMessagesPerAccount: 80, pollIntervalSeconds: 25 })
     })));
+  });
+});
+
+describe("mail body isolation", () => {
+  it("allows only inline styles and localized images without overriding message typography", () => {
+    const html = '<p style="font:20px serif">Hello</p><img data-remote-src="https://images.example.test/a.png"><a href="https://example.test/path" target="_blank">Link</a>';
+    const srcDoc = buildMessageSrcDoc(html);
+    const loadedSrcDoc = buildMessageSrcDoc(html, true);
+
+    expect(srcDoc).toContain("default-src 'none'");
+    expect(srcDoc).toContain("style-src 'unsafe-inline'");
+    expect(srcDoc).toContain("img-src data:");
+    expect(srcDoc).not.toMatch(/<img[^>]*\ssrc="https:\/\/images\.example\.test\/a\.png"/);
+    expect(srcDoc).toContain("connect-src 'none'");
+    expect(srcDoc).toContain("form-action 'none'");
+    expect(srcDoc).toContain('meta name="referrer" content="no-referrer"');
+    expect(srcDoc).toContain('data-safe-href="https://example.test/path"');
+    expect(srcDoc).toMatch(/<a[^>]*\shref="#"/);
+    expect(srcDoc).not.toMatch(/<a[^>]*\shref="https:/);
+    expect(srcDoc).not.toMatch(/<a[^>]*\starget=/);
+    expect(loadedSrcDoc).toContain("img-src data: http: https:");
+    expect(loadedSrcDoc).toMatch(/<img[^>]*\ssrc="https:\/\/images\.example\.test\/a\.png"/);
+    expect(srcDoc).not.toContain("PingFang SC");
+    expect(srcDoc).not.toContain("border-collapse:collapse");
+  });
+
+  it("detects remote images in CSS", () => {
+    const html = '<div style="background:url(https://images.example.test/bg.png)"></div>';
+    expect(hasRemoteImageReferences(html)).toBe(true);
+  });
+
+  it("loads images only for the selected message and confirms body links", async () => {
+    vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });
+    const open = vi.spyOn(window, "open").mockReturnValue(null);
+    const message: MessageDetail = {
+      id: "message-1", accountId: "account-1", accountEmail: "mail@example.test", subject: "Styled",
+      from: [{ address: "sender@example.test" }], to: [{ address: "mail@example.test" }], cc: [], preview: "", displayTime: "2026-01-01T00:00:00.000Z",
+      folder: "inbox", read: false, hasAttachments: false, attachments: [], labels: [], verificationCode: null, unsubscribeUrl: null, text: "",
+      html: '<img data-remote-src="https://images.example.test/a.png"><a data-safe-href="https://example.test/path">Example link</a>'
+    };
+    const view = render(<MessageDetailView message={message} onBack={vi.fn()} onMark={vi.fn()} />);
+
+    const frame = screen.getByTitle("邮件正文") as HTMLIFrameElement;
+    expect(frame.getAttribute("sandbox")).toBe("allow-same-origin");
+    frame.contentDocument!.body.innerHTML = '<a href="#" data-safe-href="https://example.test/path">Example link</a>';
+    fireEvent.load(frame);
+    fireEvent.click(frame.contentDocument!.querySelector("a")!);
+    expect(await screen.findByText('确认打开“Example link”？')).toBeInTheDocument();
+    expect(screen.getByText("https://example.test/path")).toBeInTheDocument();
+    expect(open).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "取消" }));
+    expect(open).not.toHaveBeenCalled();
+
+    fireEvent.click(frame.contentDocument!.querySelector("a")!);
+    fireEvent.click(await screen.findByRole("button", { name: "打开链接" }));
+    expect(open).toHaveBeenCalledWith("https://example.test/path", "_blank", "noopener,noreferrer");
+
+    fireEvent.click(screen.getByRole("button", { name: "加载图片" }));
+    await waitFor(() => expect(frame.srcdoc).toContain("img-src data: http: https:"));
+
+    view.rerender(<MessageDetailView message={{ ...message, id: "message-2" }} onBack={vi.fn()} onMark={vi.fn()} />);
+    expect(screen.getByRole("button", { name: "加载图片" })).toBeEnabled();
+    expect((screen.getByTitle("邮件正文") as HTMLIFrameElement).srcdoc).toContain("img-src data:;");
+  });
+
+  it("shows labels, copies verification codes, and confirms unsubscribe links", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+    const open = vi.spyOn(window, "open").mockReturnValue(null);
+    const message: MessageDetail = {
+      id: "message-actions", accountId: "account-1", accountEmail: "mail@example.test", subject: "Code",
+      from: [{ address: "sender@example.test" }], to: [{ address: "mail@example.test" }], cc: [], preview: "",
+      displayTime: "2026-01-01T00:00:00.000Z", folder: "inbox", read: false, hasAttachments: false,
+      attachments: [], text: "验证码 123456", html: null,
+      labels: ["forwarded", "verification_code", "unsubscribe"], verificationCode: "123456", unsubscribeUrl: "https://example.test/unsubscribe"
+    };
+    const view = render(<MessageDetailView message={message} onBack={vi.fn()} onMark={vi.fn()} />);
+
+    expect(screen.getByText("转发")).toBeInTheDocument();
+    expect(screen.getByText("验证码")).toBeInTheDocument();
+    expect(screen.getByText("可退订")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "复制 123456" }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith("123456"));
+    expect(screen.getByRole("status")).toHaveTextContent("验证码已复制");
+
+    fireEvent.click(screen.getByRole("button", { name: "快速退订" }));
+    expect(await screen.findByText("确认前往 example.test 退订？")).toBeInTheDocument();
+    expect(open).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "打开退订链接" }));
+    expect(open).toHaveBeenCalledWith("https://example.test/unsubscribe", "_blank", "noopener,noreferrer");
+
+    view.rerender(<MessageDetailView message={{ ...message, id: "message-actions-2" }} onBack={vi.fn()} onMark={vi.fn()} />);
+    expect(screen.getByRole("button", { name: "复制 123456" })).toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent("");
+
+    writeText.mockRejectedValueOnce(new Error("clipboard denied"));
+    fireEvent.click(screen.getByRole("button", { name: "复制 123456" }));
+    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("验证码复制失败"));
+
+    view.rerender(<MessageDetailView message={{ ...message, id: "message-actions-3", unsubscribeUrl: "javascript:alert(1)" }} onBack={vi.fn()} onMark={vi.fn()} />);
+    expect(screen.queryByRole("button", { name: "快速退订" })).not.toBeInTheDocument();
   });
 });

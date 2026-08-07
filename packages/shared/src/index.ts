@@ -3,6 +3,7 @@ export type ConnectionStatus = "pending" | "connecting" | "connected" | "warning
 export type SyncMode = "idle" | "polling";
 export type MessageView = "all" | "unread" | "junk";
 export type FolderKind = "inbox" | "junk";
+export type MessageLabel = "forwarded" | "verification_code" | "unsubscribe";
 
 export interface ImapConfig {
   provider: ProviderId;
@@ -14,6 +15,7 @@ export interface ImapConfig {
 export interface Account {
   id: string;
   email: string;
+  aliases: string[];
   provider: ProviderId;
   imap: Required<Pick<ImapConfig, "host" | "port" | "secure">>;
   hasCredential: true;
@@ -28,12 +30,14 @@ export interface Account {
 export interface AccountInput {
   email: string;
   password: string;
+  aliases?: string[];
   imap?: ImapConfig;
 }
 
 export interface AccountUpdate {
   email?: string;
   password?: string;
+  aliases?: string[];
   imap?: ImapConfig;
 }
 
@@ -53,6 +57,7 @@ export interface MessageSummary {
   folder: "inbox" | "junk";
   read: boolean;
   hasAttachments: boolean;
+  labels: MessageLabel[];
 }
 
 export interface MessageDetail extends MessageSummary {
@@ -61,6 +66,8 @@ export interface MessageDetail extends MessageSummary {
   attachments: string[];
   text: string;
   html: string | null;
+  verificationCode: string | null;
+  unsubscribeUrl: string | null;
 }
 
 export interface MessageListResponse {

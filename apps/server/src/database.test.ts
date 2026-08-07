@@ -25,6 +25,47 @@ describe("AppDatabase", () => {
     expect(() => new AppDatabase(path, "x".repeat(32))).toThrow("cannot decrypt");
   });
 
+  it("normalizes aliases and keeps message classifications encrypted", () => {
+    const { db, path } = database();
+    const account = db.createAccount({ email: "main@gmail.com", aliases: [" Alias@Gmail.com "], password: "secret" });
+    expect(account.aliases).toEqual(["alias@gmail.com"]);
+    db.upsertMessage({
+      accountId: account.id, folder: "inbox", mailboxPath: "INBOX", uid: 1, uidValidity: "1", read: false,
+      displayTime: "2026-01-01T00:00:00.000Z",
+      content: {
+        subject: "Code", from: [], to: [{ address: "other@gmail.com" }], cc: [], preview: "验证码 123456",
+        text: "验证码 123456", html: '<p>退订 <a data-safe-href="https://private.example/unsubscribe">here</a></p>', attachments: [],
+        classificationVersion: 1, labels: ["forwarded", "verification_code", "unsubscribe"],
+        verificationCode: "123456", unsubscribeUrl: "https://private.example/unsubscribe"
+      }
+    });
+    const item = db.listMessages({ view: "all", limit: 50 }).items[0]!;
+    expect(item.labels).toEqual(["forwarded", "verification_code", "unsubscribe"]);
+    expect(db.getMessage(item.id)).toMatchObject({ verificationCode: "123456", unsubscribeUrl: "https://private.example/unsubscribe" });
+    expect(() => db.updateAccount(account.id, { aliases: ["MAIN@gmail.com"] })).toThrow("不能与主邮箱相同");
+    expect(() => db.updateAccount(account.id, { aliases: ["same@gmail.com", "SAME@gmail.com"] })).toThrow("不能重复");
+    db.close();
+    const bytes = readFileSync(path).toString("utf8");
+    expect(bytes).not.toContain("alias@gmail.com");
+    expect(bytes).not.toContain("123456");
+    expect(bytes).not.toContain("private.example");
+  });
+
+  it("reclassifies cached messages after aliases change", () => {
+    const { db } = database();
+    const account = db.createAccount({ email: "main@gmail.com", password: "secret" });
+    db.upsertMessage({
+      accountId: account.id, folder: "inbox", mailboxPath: "INBOX", uid: 1, uidValidity: "1", read: false,
+      displayTime: "2026-01-01T00:00:00.000Z",
+      content: { subject: "Forwarded", from: [], to: [{ address: "alias@gmail.com" }], cc: [], preview: "", text: "", html: null, attachments: [], labels: ["forwarded"] }
+    });
+    db.updateAccount(account.id, { aliases: ["alias@gmail.com"] });
+    const groups = db.reclassifyAccountMessages(db.getAccount(account.id)!);
+    expect(groups).toEqual([{ folder: "inbox", ids: [expect.any(String)] }]);
+    expect(db.listMessages({ view: "all", limit: 50 }).items[0]!.labels).toEqual([]);
+    db.close();
+  });
+
   it("enforces the combined per-account retention limit", () => {
     const { db } = database();
     const account = db.createAccount({ email: "mail@gmail.com", password: "code" });
@@ -43,7 +84,11 @@ describe("AppDatabase", () => {
 
   it("migrates v1 settings without losing encrypted account data", () => {
     const { db, path } = database();
-    db.createAccount({ email: "migration@qq.com", password: "secret" });
+    const account = db.createAccount({ email: "migration@qq.com", password: "secret" });
+    const stored = db.getAccount(account.id)!;
+    db.raw.prepare("UPDATE accounts SET config_enc = ? WHERE id = ?")
+      .run(db.crypto.encrypt({ email: stored.email, imap: stored.imap }), account.id);
+    expect(db.listAccounts()[0]!.aliases).toEqual([]);
     db.raw.exec("ALTER TABLE settings DROP COLUMN poll_interval_seconds; ALTER TABLE accounts DROP COLUMN sync_mode; PRAGMA user_version = 1;");
     db.close();
 
