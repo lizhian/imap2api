@@ -14,6 +14,11 @@ import { Button, EmptyState, IconButton, Spinner } from "./components";
 import styles from "./styles.module.css";
 
 const SESSION_KEY = "imap2api-token";
+const LAYOUT_WIDTHS_KEY = "imap2api-layout-widths";
+const SIDEBAR_MIN_WIDTH = 200;
+const SIDEBAR_MAX_WIDTH = 360;
+const MESSAGE_LIST_MIN_WIDTH = 320;
+const DETAIL_MIN_WIDTH = 360;
 const PROVIDERS: Array<{ value: ProviderId; label: string }> = [
   { value: "auto", label: "自动识别" }, { value: "qq", label: "QQ 邮箱" },
   { value: "gmail", label: "Gmail" }, { value: "icloud", label: "iCloud" },
@@ -35,6 +40,49 @@ const MESSAGE_SECONDARY_FILTERS: Array<{ value: MessageSecondaryFilter; label: s
 ];
 
 type Page = "messages" | "accounts" | "settings";
+type LayoutWidthName = "sidebar" | "messageList";
+type StoredLayoutWidths = Partial<Record<LayoutWidthName, number>>;
+
+function clampWidth(value: number, min: number, max: number): number {
+  return Math.min(Math.max(min, max), Math.max(min, value));
+}
+
+function readStoredLayoutWidths(): StoredLayoutWidths {
+  try {
+    const parsed: unknown = JSON.parse(localStorage.getItem(LAYOUT_WIDTHS_KEY) ?? "{}");
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    const record = parsed as Record<string, unknown>;
+    return {
+      ...(typeof record.sidebar === "number" && Number.isFinite(record.sidebar) ? { sidebar: record.sidebar } : {}),
+      ...(typeof record.messageList === "number" && Number.isFinite(record.messageList) ? { messageList: record.messageList } : {})
+    };
+  } catch {
+    return {};
+  }
+}
+
+function sidebarMaxWidth(): number {
+  return Math.max(SIDEBAR_MIN_WIDTH, Math.min(SIDEBAR_MAX_WIDTH, window.innerWidth - 680));
+}
+
+function initialSidebarWidth(): number {
+  return clampWidth(readStoredLayoutWidths().sidebar ?? SIDEBAR_MIN_WIDTH, SIDEBAR_MIN_WIDTH, sidebarMaxWidth());
+}
+
+function initialMessageListWidth(): number {
+  const stored = readStoredLayoutWidths();
+  const sidebar = clampWidth(stored.sidebar ?? SIDEBAR_MIN_WIDTH, SIDEBAR_MIN_WIDTH, sidebarMaxWidth());
+  const max = Math.max(MESSAGE_LIST_MIN_WIDTH, window.innerWidth - sidebar - DETAIL_MIN_WIDTH);
+  return clampWidth(stored.messageList ?? MESSAGE_LIST_MIN_WIDTH, MESSAGE_LIST_MIN_WIDTH, max);
+}
+
+function storeLayoutWidth(name: LayoutWidthName, value: number): void {
+  try {
+    localStorage.setItem(LAYOUT_WIDTHS_KEY, JSON.stringify({ ...readStoredLayoutWidths(), [name]: value }));
+  } catch {
+    // Layout preferences must not prevent the application from working when storage is unavailable.
+  }
+}
 
 function formatDate(value: string | null, compact = false): string {
   if (!value) return "尚未同步";
@@ -169,7 +217,7 @@ function AuthenticatedApp({ token, onLogout }: { token: string; onLogout: () => 
   const [activeAccountId, setActiveAccountId] = useState("");
   const [messageRevision, setMessageRevision] = useState(0);
   const [eventConnection, setEventConnection] = useState<"connecting" | "connected" | "reconnecting">("connecting");
-  const [sidebarWidth, setSidebarWidth] = useState(248);
+  const [sidebarWidth, setSidebarWidth] = useState(initialSidebarWidth);
   const [notice, setNotice] = useState<{ kind: "success" | "error"; text: string } | null>(null);
   const localMessageUpdates = useRef(new Map<string, number>());
   const reducedMotion = useReducedMotion();
@@ -265,6 +313,10 @@ function AuthenticatedApp({ token, onLogout }: { token: string; onLogout: () => 
 
   const navigate = (next: Page) => { location.hash = next; setPage(next); };
   const openMailbox = (accountId: string) => { setActiveAccountId(accountId); navigate("messages"); };
+  const updateSidebarWidth = useCallback((value: number) => {
+    setSidebarWidth(value);
+    storeLayoutWidth("sidebar", value);
+  }, []);
   const totalUnread = accounts.reduce((sum, account) => sum + (account.unreadCount ?? 0), 0);
   const connectionBadge = eventConnection === "connected"
     ? { badge: "badge-success", status: "status-success", label: "服务正常" }
@@ -290,7 +342,7 @@ function AuthenticatedApp({ token, onLogout }: { token: string; onLogout: () => 
         </nav>
         <button className={`btn btn-ghost btn-sm ${styles.logoutButton}`} onClick={onLogout}><LogOut size={17} />退出</button>
       </aside>
-      <ResizeHandle value={sidebarWidth} min={200} max={() => Math.min(360, window.innerWidth - 680)} label="调整邮箱栏宽度" onChange={setSidebarWidth} />
+      <ResizeHandle value={sidebarWidth} min={SIDEBAR_MIN_WIDTH} max={sidebarMaxWidth} label="调整邮箱栏宽度" onChange={updateSidebarWidth} />
       <div className={styles.mainColumn}>
         <main className={`${styles.mainContent} ${page === "messages" ? styles.messageContent : ""}`}>
           <AnimatePresence mode="wait" initial={false}>
@@ -594,9 +646,15 @@ function MessagesPage({ api, accounts, accountId, onAccountChange, revision, onL
   const [nextCursor, setNextCursor] = useState<string | null>(null); const [history, setHistory] = useState<Array<string | null>>([]);
   const [pageSize, setPageSize] = useState<number | null>(null);
   const [confirmAll, setConfirmAll] = useState(false);
-  const [listWidth, setListWidth] = useState(380);
+  const [listWidth, setListWidth] = useState(initialMessageListWidth);
+  const [compactFilters, setCompactFilters] = useState(false);
   const [now, setNow] = useState(Date.now());
   const workspaceRef = useRef<HTMLElement | null>(null);
+  const filterBarRef = useRef<HTMLDivElement | null>(null);
+  const viewGroupRef = useRef<HTMLDivElement | null>(null);
+  const secondaryFilterGroupRef = useRef<HTMLDivElement | null>(null);
+  const secondaryFilterWidthRef = useRef(0);
+  const filterDropdownRef = useRef<HTMLDetailsElement | null>(null);
 
   useEffect(() => {
     api.request<Settings>("/settings")
@@ -620,6 +678,40 @@ function MessagesPage({ api, accounts, accountId, onAccountChange, revision, onL
   useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now()), 1000);
     return () => window.clearInterval(timer);
+  }, []);
+  useEffect(() => {
+    const closeFilterDropdown = (event: PointerEvent) => {
+      const dropdown = filterDropdownRef.current;
+      if (!dropdown?.open || (event.target instanceof Node && dropdown.contains(event.target))) return;
+      dropdown.removeAttribute("open");
+    };
+    document.addEventListener("pointerdown", closeFilterDropdown, true);
+    return () => document.removeEventListener("pointerdown", closeFilterDropdown, true);
+  }, []);
+  useLayoutEffect(() => {
+    const filterBar = filterBarRef.current;
+    const viewGroup = viewGroupRef.current;
+    const secondaryGroup = secondaryFilterGroupRef.current;
+    if (!filterBar || !viewGroup || !secondaryGroup) return;
+    const measure = () => {
+      const availableWidth = filterBar.clientWidth;
+      if (secondaryGroup.offsetWidth > 0) secondaryFilterWidthRef.current = secondaryGroup.offsetWidth;
+      const requiredWidth = viewGroup.offsetWidth + secondaryFilterWidthRef.current + 5;
+      if (availableWidth <= 0 || viewGroup.offsetWidth <= 0 || secondaryFilterWidthRef.current <= 0) return;
+      const shouldCompact = requiredWidth > availableWidth;
+      if (!shouldCompact) filterDropdownRef.current?.removeAttribute("open");
+      setCompactFilters(shouldCompact);
+    };
+    measure();
+    if (typeof ResizeObserver === "undefined") {
+      window.addEventListener("resize", measure);
+      return () => window.removeEventListener("resize", measure);
+    }
+    const observer = new ResizeObserver(measure);
+    observer.observe(filterBar);
+    observer.observe(viewGroup);
+    observer.observe(secondaryGroup);
+    return () => observer.disconnect();
   }, []);
 
   const mark = async (message: MessageSummary | MessageDetail, read: boolean) => {
@@ -668,16 +760,20 @@ function MessagesPage({ api, accounts, accountId, onAccountChange, revision, onL
       ? current.filter((value) => value !== filter)
       : [...current, filter]);
   };
+  const updateListWidth = useCallback((value: number) => {
+    setListWidth(value);
+    storeLayoutWidth("messageList", value);
+  }, []);
 
   return <section ref={workspaceRef} className={styles.mailWorkspace} style={{ "--mail-list-width": `${listWidth}px` } as CSSProperties}>
     <div className={`${styles.mailListPane} ${selected ? styles.mobileHidden : ""}`}>
       <div className={styles.mailControls}>
         <select className={`select select-sm ${styles.mobileAccountSelect}`} aria-label="筛选邮箱账号" value={accountId} onChange={(event) => onAccountChange(event.target.value)}><option value="">聚合收件箱</option>{accounts.map((account) => <option key={account.id} value={account.id}>{account.email}</option>)}</select>
-        <div className={styles.filterBar}>
-          <div className={`join ${styles.viewGroup}`} role="tablist" aria-label="邮件视图">{MESSAGE_VIEWS.map((item) => <button key={item.value} role="tab" aria-selected={view === item.value} className={`join-item btn btn-sm ${styles.viewButton} ${view === item.value ? `btn-primary btn-active ${styles.viewButtonActive}` : ""}`} onClick={() => setView(item.value)}>{item.label}</button>)}</div>
-          <div className={`join ${styles.secondaryFilterGroup}`} aria-label="邮件内容筛选">{MESSAGE_SECONDARY_FILTERS.map((item) => <button key={item.value} type="button" aria-pressed={secondaryFilters.includes(item.value)} className={`join-item btn btn-sm ${styles.secondaryFilterButton} ${secondaryFilters.includes(item.value) ? styles.secondaryFilterButtonActive : ""}`} onClick={() => toggleSecondaryFilter(item.value)}>{item.label}</button>)}</div>
-          <details className={`dropdown dropdown-end ${styles.filterDropdown}`}>
-            <summary role="button" className={`btn btn-sm ${styles.filterDropdownTrigger}`} aria-label={`更多筛选，已选 ${secondaryFilters.length} 项`} onKeyDown={(event) => {
+        <div ref={filterBarRef} className={styles.filterBar}>
+          <div ref={viewGroupRef} className={`join ${styles.viewGroup}`} role="tablist" aria-label="邮件视图">{MESSAGE_VIEWS.map((item) => <button key={item.value} role="tab" aria-selected={view === item.value} className={`join-item btn btn-sm ${styles.viewButton} ${view === item.value ? `btn-primary btn-active ${styles.viewButtonActive}` : ""}`} onClick={() => setView(item.value)}>{item.label}</button>)}</div>
+          <div ref={secondaryFilterGroupRef} className={`join ${styles.secondaryFilterGroup} ${compactFilters ? styles.secondaryFilterGroupHidden : ""}`} aria-label="邮件内容筛选" aria-hidden={compactFilters || undefined}>{MESSAGE_SECONDARY_FILTERS.map((item) => <button key={item.value} type="button" tabIndex={compactFilters ? -1 : undefined} aria-pressed={secondaryFilters.includes(item.value)} className={`join-item btn btn-sm ${styles.secondaryFilterButton} ${secondaryFilters.includes(item.value) ? styles.secondaryFilterButtonActive : ""}`} onClick={() => toggleSecondaryFilter(item.value)}>{item.label}</button>)}</div>
+          <details ref={filterDropdownRef} className={`dropdown dropdown-end ${styles.filterDropdown} ${compactFilters ? styles.filterDropdownVisible : ""}`} aria-hidden={!compactFilters || undefined}>
+            <summary role="button" tabIndex={compactFilters ? undefined : -1} className={`btn btn-sm ${styles.filterDropdownTrigger}`} aria-label={`更多筛选，已选 ${secondaryFilters.length} 项`} onKeyDown={(event) => {
               if (event.key !== "Enter" && event.key !== " ") return;
               event.preventDefault();
               event.currentTarget.parentElement?.toggleAttribute("open");
@@ -700,7 +796,7 @@ function MessagesPage({ api, accounts, accountId, onAccountChange, revision, onL
       </div>
       <div className={styles.pagination}><Button variant="quiet" disabled={!history.length} onClick={() => { const previous = [...history]; const value = previous.pop() ?? null; setHistory(previous); setCursor(value); }}><ChevronLeft size={16} />上一页</Button><span>每页 {pageSize ?? 100} 封</span><Button variant="quiet" disabled={!nextCursor} onClick={() => { setHistory((values) => [...values, cursor]); setCursor(nextCursor); }} >下一页<ChevronRight size={16} /></Button></div>
     </div>
-    <ResizeHandle value={listWidth} min={320} max={() => Math.max(320, (workspaceRef.current?.clientWidth ?? window.innerWidth) - 360)} label="调整邮件列表宽度" onChange={setListWidth} />
+    <ResizeHandle value={listWidth} min={MESSAGE_LIST_MIN_WIDTH} max={() => Math.max(MESSAGE_LIST_MIN_WIDTH, (workspaceRef.current?.clientWidth ?? window.innerWidth) - DETAIL_MIN_WIDTH)} label="调整邮件列表宽度" onChange={updateListWidth} />
     <div className={`${styles.detailPane} ${selected ? styles.detailVisible : ""}`}>
       {detailLoading ? <div className={styles.centerState}><Spinner label="正在读取邮件" /></div> : detail ? <MessageDetailView message={detail} onBack={() => { setSelected(null); setDetail(null); }} onMark={(read) => void mark(detail, read)} /> : <EmptyState icon={<FileText size={28} />} title="选择一封邮件查看内容" />}
     </div>

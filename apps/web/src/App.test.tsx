@@ -3,7 +3,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import type { Account, MessageDetail, MessageSummary } from "@imap2api/shared";
 import { App, buildMessageSrcDoc, canShowFullForwardedVia, formatRelativeDate, hasRemoteImageReferences, MessageDetailView } from "./App";
 
-afterEach(() => { cleanup(); sessionStorage.clear(); location.hash = ""; vi.restoreAllMocks(); vi.unstubAllGlobals(); });
+afterEach(() => { cleanup(); sessionStorage.clear(); localStorage.clear(); location.hash = ""; vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
 describe("App authentication", () => {
   it("keeps the token in session storage after verification", async () => {
@@ -57,6 +57,7 @@ describe("App authentication", () => {
 
   it("uses sidebar account tabs to filter the message list", async () => {
     sessionStorage.setItem("imap2api-token", "valid-token");
+    vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(1000);
     const account = {
       id: "account-1", email: "operations@example.com", aliases: [], provider: "gmail",
       imap: { host: "imap.gmail.com", port: 993, secure: true }, hasCredential: true,
@@ -88,9 +89,40 @@ describe("App authentication", () => {
     expect(accountTab).toHaveAttribute("aria-selected", "true");
     expect(accountTab).toHaveAccessibleName(/7 封未读/);
     const sidebarSeparator = screen.getByRole("separator", { name: "调整邮箱栏宽度" });
-    expect(sidebarSeparator).toHaveAttribute("aria-valuenow", "248");
+    const messageListSeparator = screen.getByRole("separator", { name: "调整邮件列表宽度" });
+    expect(sidebarSeparator).toHaveAttribute("aria-valuenow", "200");
+    expect(messageListSeparator).toHaveAttribute("aria-valuenow", "320");
     fireEvent.keyDown(sidebarSeparator, { key: "ArrowRight" });
-    await waitFor(() => expect(sidebarSeparator).toHaveAttribute("aria-valuenow", "256"));
+    fireEvent.keyDown(messageListSeparator, { key: "ArrowRight" });
+    await waitFor(() => expect(sidebarSeparator).toHaveAttribute("aria-valuenow", "208"));
+    await waitFor(() => expect(messageListSeparator).toHaveAttribute("aria-valuenow", "328"));
+    expect(JSON.parse(localStorage.getItem("imap2api-layout-widths") ?? "{}")).toEqual({ sidebar: 208, messageList: 328 });
+  });
+
+  it("restores valid column widths and ignores a damaged layout record", async () => {
+    sessionStorage.setItem("imap2api-token", "valid-token");
+    localStorage.setItem("imap2api-layout-widths", JSON.stringify({ sidebar: 232, messageList: 408 }));
+    vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(1000);
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/events")) return { ok: true, status: 200, body: new ReadableStream<Uint8Array>({ start() {} }) } as Response;
+      const json = async () => url.endsWith("/accounts") ? []
+        : url.endsWith("/settings") ? { maxMessagesPerAccount: 100, pollIntervalSeconds: 10, pageSize: 100 }
+          : url.includes("/messages?") ? { items: [], nextCursor: null }
+            : { ok: true };
+      return { ok: true, status: 200, body: null, json } as Response;
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const mounted = render(<App />);
+    expect(await screen.findByRole("separator", { name: "调整邮箱栏宽度" })).toHaveAttribute("aria-valuenow", "232");
+    expect(screen.getByRole("separator", { name: "调整邮件列表宽度" })).toHaveAttribute("aria-valuenow", "408");
+
+    mounted.unmount();
+    localStorage.setItem("imap2api-layout-widths", "{damaged");
+    render(<App />);
+    expect(await screen.findByRole("separator", { name: "调整邮箱栏宽度" })).toHaveAttribute("aria-valuenow", "200");
+    expect(screen.getByRole("separator", { name: "调整邮件列表宽度" })).toHaveAttribute("aria-valuenow", "320");
   });
 
   it("reorders accounts from the drag handle keyboard controls", async () => {
@@ -323,6 +355,57 @@ describe("message list interactions", () => {
     expect(fetchMock).toHaveBeenCalledWith("/api/v1/accounts/account-2/messages/read-all", expect.objectContaining({ method: "POST" }));
   });
 
+  it("collapses content filters only when their measured buttons do not fit", async () => {
+    sessionStorage.setItem("imap2api-token", "valid-token");
+    const widths = new WeakMap<HTMLElement, number>();
+    const resizeCallbacks: ResizeObserverCallback[] = [];
+    vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockImplementation(function (this: HTMLElement) { return widths.get(this) ?? 0; });
+    vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockImplementation(function (this: HTMLElement) { return widths.get(this) ?? 0; });
+    vi.stubGlobal("ResizeObserver", class {
+      constructor(callback: ResizeObserverCallback) { resizeCallbacks.push(callback); }
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    });
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/events")) return { ok: true, status: 200, body: new ReadableStream<Uint8Array>({ start() {} }) } as Response;
+      const json = async () => url.endsWith("/accounts") ? [account("account-1", "first@example.com")]
+        : url.endsWith("/settings") ? { maxMessagesPerAccount: 100, pollIntervalSeconds: 10, pageSize: 100 }
+          : url.includes("/messages?") ? { items: [], nextCursor: null }
+            : { ok: true };
+      return { ok: true, status: 200, body: null, json } as Response;
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<App />);
+    const viewGroup = await screen.findByRole("tablist", { name: "邮件视图" });
+    const filterBar = viewGroup.parentElement as HTMLElement;
+    const contentFilters = document.querySelector<HTMLElement>('[aria-label="邮件内容筛选"]')!;
+    widths.set(filterBar, 400);
+    widths.set(viewGroup, 180);
+    widths.set(contentFilters, 160);
+
+    act(() => resizeCallbacks.forEach((callback) => callback([], {} as ResizeObserver)));
+    expect(contentFilters).not.toHaveAttribute("aria-hidden");
+    expect(screen.queryByRole("button", { name: /更多筛选/ })).not.toBeInTheDocument();
+
+    widths.set(filterBar, 330);
+    act(() => resizeCallbacks.forEach((callback) => callback([], {} as ResizeObserver)));
+    expect(within(viewGroup).getAllByRole("tab").map((tab) => tab.textContent)).toEqual(["全部", "未读", "垃圾箱"]);
+    expect(contentFilters).toHaveAttribute("aria-hidden", "true");
+    const moreFilters = screen.getByRole("button", { name: "更多筛选，已选 0 项" });
+    fireEvent.keyDown(moreFilters, { key: "Enter" });
+    expect(moreFilters.closest("details")).toHaveAttribute("open");
+    fireEvent.pointerDown(document.body);
+    expect(moreFilters.closest("details")).not.toHaveAttribute("open");
+
+    widths.set(filterBar, 400);
+    act(() => resizeCallbacks.forEach((callback) => callback([], {} as ResizeObserver)));
+    expect(contentFilters).not.toHaveAttribute("aria-hidden");
+    expect(screen.queryByRole("button", { name: /更多筛选/ })).not.toBeInTheDocument();
+  });
+
   it("combines a message view with multiple content filters and refreshes in place", async () => {
     sessionStorage.setItem("imap2api-token", "valid-token");
     const eventStream = new ReadableStream<Uint8Array>({ start() {} });
@@ -353,10 +436,6 @@ describe("message list interactions", () => {
     expect(screen.getByRole("tab", { name: "未读" })).toHaveAttribute("aria-selected", "true");
     expect(screen.getByRole("button", { name: "验证码" })).toHaveAttribute("aria-pressed", "true");
     expect(screen.getByRole("button", { name: "附件" })).toHaveAttribute("aria-pressed", "true");
-    const moreFilters = screen.getByRole("button", { name: "更多筛选，已选 2 项" });
-    fireEvent.keyDown(moreFilters, { key: "Enter" });
-    expect(moreFilters.closest("details")).toHaveAttribute("open");
-
     blockRefresh = true;
     fireEvent.click(screen.getByRole("button", { name: "刷新邮件列表" }));
     expect(screen.getByText("Unread subject")).toBeInTheDocument();

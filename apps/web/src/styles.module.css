@@ -60,7 +60,7 @@
 .tooltipArrow { fill: var(--color-neutral); }
 @keyframes spin { to { transform: rotate(360deg); } }
 
-.appShell { min-height: 100vh; display: grid; grid-template-columns: var(--sidebar-width, 248px) 1px minmax(0, 1fr); overflow: hidden; }
+.appShell { min-height: 100vh; display: grid; grid-template-columns: var(--sidebar-width, 200px) 1px minmax(0, 1fr); overflow: hidden; }
 .sidebar { min-width: 0; height: 100vh; z-index: 20; display: flex; flex-direction: column; padding: 12px 10px 10px; }
 .sidebarBrand { height: 40px; display: flex; align-items: center; gap: 9px; padding: 0 6px; margin-bottom: 10px; font-size: 16px; }
 .sidebarBrand .brandMark { width: 30px; height: 30px; border-radius: 7px; }
@@ -192,24 +192,26 @@
 .srOnly { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 .linkConfirmUrl { overflow-wrap: anywhere; }
 
-.mailWorkspace { height: 100%; min-height: 520px; display: grid; grid-template-columns: var(--mail-list-width, 380px) 1px minmax(0, 1fr); overflow: hidden; background: var(--surface); }
-.mailListPane { min-width: 0; min-height: 0; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; container-type: inline-size; }
+.mailWorkspace { height: 100%; min-height: 520px; display: grid; grid-template-columns: var(--mail-list-width, 320px) 1px minmax(0, 1fr); overflow: hidden; background: var(--surface); }
+.mailListPane { min-width: 0; min-height: 0; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; }
 .mailControls, .detailToolbar { position: relative; z-index: 5; height: 52px; min-height: 52px; border-bottom: 1px solid color-mix(in oklab, var(--color-base-content) 10%, transparent); background: var(--surface-raised); box-shadow: 0 3px 8px color-mix(in oklab, var(--color-neutral) 4%, transparent); }
 .mailControls { display: grid; grid-template-columns: minmax(0, 1fr) 36px 36px; align-items: center; gap: 6px; padding: 6px 8px; }
 .mailControls select { min-width: 0; height: 36px; }
 .mobileAccountSelect { display: none; }
 .filterBar { min-width: 0; display: flex; align-items: center; gap: 5px; }
-.viewGroup { width: fit-content; justify-self: start; overflow: hidden; border: 1px solid var(--border); border-radius: 6px; }
+.viewGroup { width: fit-content; flex: none; justify-self: start; overflow: hidden; border: 1px solid var(--border); border-radius: 6px; }
 .viewButton { min-height: 30px; height: 30px; padding: 0 9px; border: 0; border-left: 1px solid var(--border); background: var(--surface); color: var(--text-secondary); font-size: 12px; font-weight: 500; white-space: nowrap; }
 .viewButton:first-child { border-left: 0; }
 .viewButton:hover { background: var(--color-base-200); color: var(--text); }
 .viewGroup .viewButtonActive { border-color: var(--accent); background: var(--accent); color: var(--color-primary-content); font-weight: 650; }
 .secondaryFilterGroup { flex: none; overflow: hidden; border: 1px solid var(--border); border-radius: 6px; }
+.secondaryFilterGroupHidden { display: none; }
 .secondaryFilterButton { min-height: 30px; height: 30px; padding: 0 8px; border: 0; border-left: 1px solid var(--border); background: var(--surface); color: var(--text-tertiary); font-size: 12px; font-weight: 500; white-space: nowrap; }
 .secondaryFilterButton:first-child { border-left: 0; }
 .secondaryFilterButton:hover { background: var(--color-base-200); color: var(--text); }
 .secondaryFilterGroup .secondaryFilterButtonActive { background: color-mix(in oklab, var(--accent) 11%, var(--surface)); color: color-mix(in oklab, var(--accent) 76%, var(--text)); font-weight: 650; }
 .filterDropdown { display: none; flex: none; }
+.filterDropdownVisible { display: inline-block; }
 .filterDropdownTrigger { position: relative; width: 32px; min-height: 30px; height: 30px; padding: 0; border-color: var(--border); border-radius: 6px; background: var(--surface); color: var(--text-secondary); }
 .filterDropdownTrigger > span { position: absolute; top: -5px; right: -5px; min-width: 16px; height: 16px; display: grid; place-items: center; padding: 0 4px; border: 1px solid var(--surface); border-radius: 999px; background: var(--accent); color: var(--color-primary-content); font-size: 10px; font-weight: 700; }
 .filterDropdown[open] .filterDropdownTrigger { border-color: color-mix(in oklab, var(--accent) 45%, var(--border)); background: color-mix(in oklab, var(--accent) 8%, var(--surface)); color: color-mix(in oklab, var(--accent) 76%, var(--text)); }
@@ -252,10 +254,6 @@
 .pagination { min-height: 46px; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 5px 8px; border-top: 1px solid var(--border-soft); background: var(--surface-raised); }
 .pagination span { color: var(--text-tertiary); font-size: 11px; }
 
-@container (max-width: 520px) {
-  .secondaryFilterGroup { display: none; }
-  .filterDropdown { display: inline-block; }
-}
 .detailPane { min-width: 0; min-height: 0; overflow: hidden; }
 .detailPane > .emptyState { height: 100%; }
 .messageDetail { position: relative; height: 100%; min-height: 0; display: grid; grid-template-rows: auto auto auto minmax(0, 1fr); overflow: hidden; }
