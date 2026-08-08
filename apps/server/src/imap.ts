@@ -1,9 +1,9 @@
 import { ImapFlow } from "imapflow";
-import type { ReadAllResult, SyncTriggerResult } from "@imap2api/shared";
-import { AccountSupervisor, type ImapClientFactory, type PollScheduler } from "./account-supervisor.js";
+import type { Account, MailboxListResponse, ReadAllResult, SyncFolderConfig, SyncTriggerResult } from "@imap2api/shared";
+import { AccountSupervisor, isSelectableCustomMailbox, resolveSystemMailboxes, type ImapClientFactory, type ListedMailbox, type PollScheduler } from "./account-supervisor.js";
 import { AppDatabase, type StoredAccount } from "./database.js";
 import { EventBroker } from "./events.js";
-import { AccountNotFoundError, MessageNotFoundError } from "./errors.js";
+import { AccountNotFoundError, InputError, MessageNotFoundError } from "./errors.js";
 
 export class ImapService {
   private readonly supervisor: AccountSupervisor;
@@ -63,6 +63,37 @@ export class ImapService {
     }
   }
 
+  async listMailboxes(accountId: string): Promise<MailboxListResponse> {
+    const account = this.requireAccount(accountId);
+    const mailboxes = await this.discoverMailboxes(account);
+    return this.toMailboxList(account, mailboxes);
+  }
+
+  async updateSyncFolders(accountId: string, folders: SyncFolderConfig[]): Promise<Account> {
+    const account = this.requireAccount(accountId);
+    const mailboxes = await this.discoverMailboxes(account);
+    const system = resolveSystemMailboxes(mailboxes);
+    const available = new Set(mailboxes.filter((box) => isSelectableCustomMailbox(box, system)).map((box) => box.path));
+    const existing = new Set(account.syncFolders.map((folder) => folder.path));
+    const unavailableNew = folders.find((folder) => !available.has(folder.path) && !existing.has(folder.path));
+    if (unavailableNew) throw new InputError(`同步文件夹不可用：${unavailableNew.path}`);
+
+    await this.supervisor.removeAccount(accountId);
+    try {
+      const result = this.db.updateSyncFolders(accountId, folders);
+      if (!result) throw new AccountNotFoundError();
+      for (const removed of result.removed) {
+        this.events.publish({
+          type: "messages.changed", accountId, folder: removed.folder,
+          addedIds: [], updatedIds: [], deletedIds: removed.ids, occurredAt: new Date().toISOString()
+        });
+      }
+      return result.account;
+    } finally {
+      this.supervisor.startAccount(accountId);
+    }
+  }
+
   async markRead(messageId: string, read: boolean): Promise<void> {
     const transport = this.db.getMessageTransport(messageId);
     if (!transport) throw new MessageNotFoundError();
@@ -101,18 +132,19 @@ export class ImapService {
     let count = 0;
     try {
       await client.connect();
-      for (const kind of ["inbox", "junk"] as const) {
-        const group = rows.filter((row) => row.folder === kind);
+      const groups = new Map<string, typeof rows>();
+      for (const row of rows) groups.set(row.mailboxPath, [...(groups.get(row.mailboxPath) ?? []), row]);
+      for (const [mailboxPath, group] of groups) {
         if (!group.length) continue;
         try {
-          const lock = await client.getMailboxLock(group[0]!.mailboxPath);
+          const lock = await client.getMailboxLock(mailboxPath);
           try {
             await client.messageFlagsAdd(group.map((row) => row.uid), ["\\Seen"], { uid: true });
             for (const row of group) this.db.updateKnownRead(row.id, true);
             this.events.publish({
               type: "messages.changed",
               accountId,
-              folder: kind,
+              folder: group[0]!.folder,
               addedIds: [],
               updatedIds: group.map((row) => row.id),
               deletedIds: [],
@@ -123,7 +155,7 @@ export class ImapService {
             lock.release();
           }
         } catch {
-          failedFolders.push(kind);
+          if (!failedFolders.includes(group[0]!.folder)) failedFolders.push(group[0]!.folder);
         }
       }
       return { count, failedFolders };
@@ -144,6 +176,47 @@ export class ImapService {
     });
     client.on("error", () => undefined);
     return client;
+  }
+
+  private async discoverMailboxes(account: StoredAccount): Promise<ListedMailbox[]> {
+    const client = this.clientFactory(account);
+    try {
+      await client.connect();
+      return await client.list() as ListedMailbox[];
+    } finally {
+      if (client.usable) await client.logout().catch(() => undefined);
+    }
+  }
+
+  private toMailboxList(account: StoredAccount, mailboxes: ListedMailbox[]): MailboxListResponse {
+    const system = resolveSystemMailboxes(mailboxes);
+    const selected = new Map(account.syncFolders.map((folder) => [folder.path, folder.mode]));
+    const counts = this.db.getMailboxCachedCounts(account.id);
+    const item = (box: ListedMailbox, kind: "inbox" | "junk" | "custom", selectable: boolean) => ({
+      path: box.path,
+      name: box.name,
+      depth: box.delimiter ? Math.max(0, box.path.split(box.delimiter).length - 1) : 0,
+      kind,
+      selectable,
+      available: true,
+      selectedMode: kind === "custom" ? selected.get(box.path) ?? null : null,
+      cachedMessageCount: counts.get(this.db.mailboxKey(box.path)) ?? 0
+    });
+    const items = [
+      ...(system.inbox ? [item(system.inbox, "inbox" as const, false)] : []),
+      ...(system.junk ? [item(system.junk, "junk" as const, false)] : []),
+      ...mailboxes.filter((box) => isSelectableCustomMailbox(box, system)).map((box) => item(box, "custom", true))
+    ];
+    const known = new Set(items.map((value) => value.path));
+    for (const folder of account.syncFolders) {
+      if (known.has(folder.path)) continue;
+      items.push({
+        path: folder.path, name: folder.path, depth: 0, kind: "custom", selectable: true,
+        available: false, selectedMode: folder.mode,
+        cachedMessageCount: counts.get(this.db.mailboxKey(folder.path)) ?? 0
+      });
+    }
+    return { items };
   }
 
   private requireAccount(id: string): StoredAccount {

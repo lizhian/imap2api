@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type { Account, MessageDetail, MessageSummary } from "@imap2api/shared";
-import { App, buildMessageSrcDoc, formatRelativeDate, hasRemoteImageReferences, MessageDetailView } from "./App";
+import { App, buildMessageSrcDoc, canShowFullForwardedVia, formatRelativeDate, hasRemoteImageReferences, MessageDetailView } from "./App";
 
 afterEach(() => { cleanup(); sessionStorage.clear(); location.hash = ""; vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
@@ -32,14 +32,16 @@ describe("App authentication", () => {
         imap: { host: "imap.qq.com", port: 993, secure: true }, hasCredential: true,
         status: "connected", syncMode: "idle", messageCount: 18, unreadCount: 3, lastSyncedAt: "2026-08-07T00:00:00.000Z",
         lastError: null, createdAt: "2026-08-07T00:00:00.000Z", updatedAt: "2026-08-07T00:00:00.000Z"
-      }] : url.endsWith("/settings") ? { maxMessagesPerAccount: 100, pollIntervalSeconds: 10 } : { ok: true };
+      }] : url.endsWith("/settings") ? { maxMessagesPerAccount: 100, pollIntervalSeconds: 10, pageSize: 100 } : { ok: true };
       return { ok: true, status: 200, body: null, json } as Response;
     });
     vi.stubGlobal("fetch", fetchMock);
 
     render(<App />);
     expect(await screen.findByText("IDLE 实时")).toBeInTheDocument();
-    expect(screen.getByText("本地缓存").nextElementSibling).toHaveTextContent("18 封 · 3 未读");
+    expect(screen.getByText("本地缓存").nextElementSibling).toHaveTextContent("18封");
+    expect(screen.getByText("未读邮件").nextElementSibling).toHaveTextContent("3封");
+    expect(screen.getByText("自定义文件夹").nextElementSibling).toHaveTextContent("0个");
     expect(screen.getByText("最近同步").nextElementSibling).toHaveTextContent(/前$/);
     expect(screen.getByText(/1 个别名/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "编辑账号" }));
@@ -80,7 +82,7 @@ describe("App authentication", () => {
     fireEvent.click(accountTab);
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
-      expect.stringContaining("/messages?view=all&limit=50&accountId=account-1"),
+      expect.stringContaining("/messages?view=all&limit=100&accountId=account-1"),
       expect.any(Object)
     ));
     expect(accountTab).toHaveAttribute("aria-selected", "true");
@@ -118,7 +120,7 @@ describe("App authentication", () => {
         return { ok: true, status: 200, body: null, json: async () => accounts } as Response;
       }
       const json = async () => url.endsWith("/accounts") ? accounts
-        : url.endsWith("/settings") ? { maxMessagesPerAccount: 100, pollIntervalSeconds: 10 }
+        : url.endsWith("/settings") ? { maxMessagesPerAccount: 100, pollIntervalSeconds: 10, pageSize: 100 }
           : { ok: true };
       return { ok: true, status: 200, body: null, json } as Response;
     });
@@ -137,7 +139,47 @@ describe("App authentication", () => {
     ]));
   });
 
-  it("loads and saves both global synchronization settings", async () => {
+  it("configures custom folder polling or IDLE and confirms cached folder removal", async () => {
+    location.hash = "accounts";
+    sessionStorage.setItem("imap2api-token", "valid-token");
+    vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });
+    const account = {
+      id: "11111111-1111-4111-8111-111111111111", email: "folders@example.com", aliases: [], provider: "custom",
+      imap: { host: "imap.example.com", port: 993, secure: true }, hasCredential: true,
+      status: "connected", syncMode: "idle", messageCount: 2, unreadCount: 2, syncFolderCount: 1,
+      lastSyncedAt: null, lastError: null, createdAt: "2026-08-07T00:00:00.000Z", updatedAt: "2026-08-07T00:00:00.000Z"
+    };
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const json = async () => url.endsWith("/accounts") ? [account]
+        : url.endsWith("/settings") ? { maxMessagesPerAccount: 100, pollIntervalSeconds: 10, pageSize: 100 }
+          : url.endsWith("/mailboxes") ? { items: [
+            { path: "INBOX", name: "INBOX", depth: 0, kind: "inbox", selectable: false, available: true, selectedMode: null, cachedMessageCount: 0 },
+            { path: "Relay/Old", name: "Old", depth: 1, kind: "custom", selectable: true, available: true, selectedMode: "polling", cachedMessageCount: 2 },
+            { path: "Relay/New", name: "New", depth: 1, kind: "custom", selectable: true, available: true, selectedMode: null, cachedMessageCount: 0 }
+          ] } : { ...account, syncFolderCount: 1 };
+      return { ok: true, status: 200, body: null, json } as Response;
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "设置同步文件夹" }));
+    const dialog = await screen.findByRole("dialog", { name: "同步文件夹" });
+    expect(within(dialog).getByRole("checkbox", { name: /INBOX/ })).toBeDisabled();
+    fireEvent.click(within(dialog).getByRole("checkbox", { name: /Old/ }));
+    fireEvent.click(within(dialog).getByRole("checkbox", { name: /New/ }));
+    fireEvent.click(within(dialog).getByRole("button", { name: "IDLE" }));
+    fireEvent.click(within(dialog).getByRole("button", { name: "保存配置" }));
+    const confirm = await screen.findByRole("alertdialog");
+    fireEvent.click(within(confirm).getByRole("button", { name: "移除并保存" }));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
+      "/api/v1/accounts/11111111-1111-4111-8111-111111111111/sync-folders",
+      expect.objectContaining({ method: "PUT", body: JSON.stringify({ folders: [{ path: "Relay/New", mode: "idle" }] }) })
+    ));
+  });
+
+  it("loads and saves global synchronization and pagination settings", async () => {
     location.hash = "settings";
     sessionStorage.setItem("imap2api-token", "valid-token");
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -146,7 +188,7 @@ describe("App authentication", () => {
         return { ok: true, status: 200, body: null, json: async () => JSON.parse(String(init.body)) } as Response;
       }
       const json = async () => url.endsWith("/settings")
-        ? { maxMessagesPerAccount: 100, pollIntervalSeconds: 10 }
+        ? { maxMessagesPerAccount: 100, pollIntervalSeconds: 10, pageSize: 100 }
         : url.endsWith("/accounts") ? [] : { ok: true };
       return { ok: true, status: 200, body: null, json } as Response;
     });
@@ -155,12 +197,14 @@ describe("App authentication", () => {
     render(<App />);
     const max = await screen.findByLabelText("每个账号最多保留");
     const interval = screen.getByLabelText("无 IDLE 时轮询间隔");
+    const pageSize = screen.getByLabelText("邮件列表每页显示");
     fireEvent.change(max, { target: { value: "80" } });
     fireEvent.change(interval, { target: { value: "25" } });
+    fireEvent.change(pageSize, { target: { value: "60" } });
     fireEvent.click(screen.getByRole("button", { name: "保存设置" }));
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/v1/settings", expect.objectContaining({
-      method: "PATCH", body: JSON.stringify({ maxMessagesPerAccount: 80, pollIntervalSeconds: 25 })
+      method: "PATCH", body: JSON.stringify({ maxMessagesPerAccount: 80, pollIntervalSeconds: 25, pageSize: 60 })
     })));
   });
 });
@@ -180,10 +224,18 @@ describe("relative message time", () => {
   });
 });
 
+describe("forwarding mailbox fit", () => {
+  it("uses the full address only when the measured remaining width can contain it", () => {
+    expect(canShowFullForwardedVia(620, 80, 260)).toBe(true);
+    expect(canShowFullForwardedVia(360, 80, 290)).toBe(false);
+    expect(canShowFullForwardedVia(620, 420, 360)).toBe(false);
+  });
+});
+
 describe("message list interactions", () => {
   const account = (id: string, email: string): Account => ({
     id, email, aliases: [], provider: "gmail", imap: { host: "imap.gmail.com", port: 993, secure: true },
-    hasCredential: true, status: "connected", syncMode: "idle", messageCount: 1, unreadCount: 1,
+    hasCredential: true, status: "connected", syncMode: "idle", messageCount: 1, unreadCount: 1, syncFolderCount: 0,
     lastSyncedAt: "2026-08-07T00:00:00.000Z", lastError: null,
     createdAt: "2026-08-07T00:00:00.000Z", updatedAt: "2026-08-07T00:00:00.000Z"
   });
@@ -205,7 +257,7 @@ describe("message list interactions", () => {
       const url = String(input);
       if (url.endsWith("/events")) return { ok: true, status: 200, body: eventStream } as Response;
       const json = async () => url.endsWith("/accounts") ? [account("account-1", "first@example.com")]
-        : url.endsWith("/settings") ? { maxMessagesPerAccount: 100, pollIntervalSeconds: 10 }
+        : url.endsWith("/settings") ? { maxMessagesPerAccount: 100, pollIntervalSeconds: 10, pageSize: 100 }
           : url.includes("/messages?") ? { items: [summary], nextCursor: null }
             : url.endsWith("/messages/message-1") ? detail
               : url.endsWith("/messages/message-1/read") && init?.method === "PATCH" ? { ok: true }
@@ -252,7 +304,7 @@ describe("message list interactions", () => {
       const url = String(input);
       if (url.endsWith("/events")) return { ok: true, status: 200, body: eventStream } as Response;
       const json = async () => url.endsWith("/accounts") ? accounts
-        : url.endsWith("/settings") ? { maxMessagesPerAccount: 100, pollIntervalSeconds: 10 }
+        : url.endsWith("/settings") ? { maxMessagesPerAccount: 100, pollIntervalSeconds: 10, pageSize: 100 }
           : url.includes("/messages?") ? { items: [summary], nextCursor: null }
             : url.includes("/messages/read-all") ? { count: 1, failedFolders: [] }
               : { ok: true };
@@ -262,7 +314,7 @@ describe("message list interactions", () => {
 
     render(<App />);
     const markAllButton = await screen.findByRole("button", { name: "全部已读" });
-    expect(markAllButton).toBeEnabled();
+    await waitFor(() => expect(markAllButton).toBeEnabled());
     fireEvent.click(markAllButton);
     const dialog = await screen.findByRole("alertdialog");
     fireEvent.click(within(dialog).getByRole("button", { name: "全部已读" }));
@@ -283,7 +335,7 @@ describe("message list interactions", () => {
         await new Promise<void>((resolve) => { resolveRefresh = resolve; });
       }
       const json = async () => url.endsWith("/accounts") ? [account("account-1", "first@example.com")]
-        : url.endsWith("/settings") ? { maxMessagesPerAccount: 100, pollIntervalSeconds: 10 }
+        : url.endsWith("/settings") ? { maxMessagesPerAccount: 100, pollIntervalSeconds: 10, pageSize: 100 }
           : url.includes("/messages?") ? { items: [{ ...summary, labels: ["verification_code"] }], nextCursor: null }
             : { ok: true };
       return { ok: true, status: 200, body: null, json } as Response;
@@ -296,7 +348,7 @@ describe("message list interactions", () => {
     fireEvent.click(screen.getByRole("button", { name: "验证码" }));
     fireEvent.click(screen.getByRole("button", { name: "附件" }));
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
-      "/api/v1/messages?view=unread&limit=50&filter=verification_code&filter=attachment", expect.any(Object)
+      "/api/v1/messages?view=unread&limit=100&filter=verification_code&filter=attachment", expect.any(Object)
     ));
     expect(screen.getByRole("tab", { name: "未读" })).toHaveAttribute("aria-selected", "true");
     expect(screen.getByRole("button", { name: "验证码" })).toHaveAttribute("aria-pressed", "true");
@@ -314,14 +366,14 @@ describe("message list interactions", () => {
     await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent(""));
   });
 
-  it("exposes the full forwarding mailbox on the compact list label", async () => {
+  it("keeps the full forwarding mailbox available when the compact label falls back", async () => {
     sessionStorage.setItem("imap2api-token", "valid-token");
     const eventStream = new ReadableStream<Uint8Array>({ start() {} });
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url.endsWith("/events")) return { ok: true, status: 200, body: eventStream } as Response;
       const json = async () => url.endsWith("/accounts") ? [account("account-1", "first@example.com")]
-        : url.endsWith("/settings") ? { maxMessagesPerAccount: 100, pollIntervalSeconds: 10 }
+        : url.endsWith("/settings") ? { maxMessagesPerAccount: 100, pollIntervalSeconds: 10, pageSize: 100 }
           : url.includes("/messages?") ? {
             items: [{ ...summary, labels: ["forwarded"], forwardedVia: "relay@domain-b.test" }], nextCursor: null
           } : { ok: true };
@@ -332,7 +384,6 @@ describe("message list interactions", () => {
     render(<App />);
     const label = await screen.findByLabelText("经由邮箱 relay@domain-b.test");
     expect(label).toHaveAttribute("title", "经由邮箱 relay@domain-b.test");
-    expect(label).toHaveTextContent("relay@domain-b.test");
     expect(label).toHaveTextContent("转发");
   });
 });
@@ -400,13 +451,46 @@ describe("mail body isolation", () => {
     expect((screen.getByTitle("邮件正文") as HTMLIFrameElement).srcdoc).toContain("img-src data:;");
   });
 
+  it("collapses detail metadata while scrolling either body type and resets for another message", () => {
+    const message: MessageDetail = {
+      id: "message-scroll", accountId: "account-1", accountEmail: "mail@example.test", subject: "Scrollable message",
+      from: [{ address: "sender@example.test" }], to: [{ address: "mail@example.test" }], cc: [{ address: "copy@example.test" }], preview: "",
+      displayTime: "2026-01-01T00:00:00.000Z", folder: "inbox", read: true, hasAttachments: true,
+      attachments: ["invoice.pdf"], labels: [], forwardedVia: null, verificationCode: null, unsubscribeUrl: null,
+      text: "Long message body", html: null
+    };
+    const view = render(<MessageDetailView message={message} onBack={vi.fn()} onMark={vi.fn()} />);
+    const metadata = screen.getByText("发件人").closest("dl")!.parentElement!;
+    const textBody = screen.getByText("Long message body");
+
+    expect(metadata).toHaveAttribute("aria-hidden", "false");
+    Object.defineProperty(textBody, "scrollTop", { configurable: true, value: 40 });
+    fireEvent.scroll(textBody);
+    expect(metadata).toHaveAttribute("aria-hidden", "true");
+    expect(screen.getByRole("heading", { name: "Scrollable message" })).toBeVisible();
+
+    Object.defineProperty(textBody, "scrollTop", { configurable: true, value: 20 });
+    fireEvent.scroll(textBody);
+    expect(metadata).toHaveAttribute("aria-hidden", "false");
+
+    view.rerender(<MessageDetailView message={{ ...message, id: "message-html", text: "", html: "<p>HTML body</p>" }} onBack={vi.fn()} onMark={vi.fn()} />);
+    const frame = screen.getByTitle("邮件正文") as HTMLIFrameElement;
+    fireEvent.load(frame);
+    Object.defineProperty(frame.contentDocument!.documentElement, "scrollTop", { configurable: true, value: 40 });
+    fireEvent.scroll(frame.contentDocument!);
+    expect(metadata).toHaveAttribute("aria-hidden", "true");
+
+    view.rerender(<MessageDetailView message={{ ...message, id: "message-next" }} onBack={vi.fn()} onMark={vi.fn()} />);
+    expect(metadata).toHaveAttribute("aria-hidden", "false");
+  });
+
   it("shows labels, copies verification codes, and confirms unsubscribe links", async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
     const open = vi.spyOn(window, "open").mockReturnValue(null);
     const message: MessageDetail = {
       id: "message-actions", accountId: "account-1", accountEmail: "mail@example.test", subject: "Code",
-      from: [{ address: "sender@example.test" }], to: [{ address: "mail@example.test" }], cc: [], preview: "",
+      from: [{ name: "Sender", address: "sender@example.test" }], to: [{ address: "mail@example.test" }], cc: [{ name: "Copy", address: "copy@example.test" }], preview: "",
       displayTime: "2026-01-01T00:00:00.000Z", folder: "inbox", read: false, hasAttachments: false,
       attachments: [], text: "验证码 123456", html: null,
       labels: ["forwarded", "verification_code", "unsubscribe"], forwardedVia: "relay@domain-b.test",
@@ -414,14 +498,35 @@ describe("mail body isolation", () => {
     };
     const view = render(<MessageDetailView message={message} onBack={vi.fn()} onMark={vi.fn()} />);
 
-    expect(screen.getByText("转发")).toBeInTheDocument();
-    expect(screen.getByText("验证码")).toBeInTheDocument();
-    expect(screen.getByText("可退订")).toBeInTheDocument();
+    expect(screen.getByText("relay@domain-b.test")).toBeInTheDocument();
+    expect(screen.queryByText("转发")).not.toBeInTheDocument();
+    expect(screen.queryByText("验证码")).not.toBeInTheDocument();
+    expect(view.container.querySelector('[data-label="unsubscribe"]')).toBeNull();
+    expect(screen.getByRole("button", { name: "标记为已读" }).querySelector(".lucide-mail")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "复制邮箱地址 sender@example.test" }).querySelector(".lucide-copy")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "复制经由邮箱 relay@domain-b.test" }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith("relay@domain-b.test"));
+    expect(screen.getByRole("button", { name: "复制经由邮箱 relay@domain-b.test" })).toHaveAttribute("data-copy-state", "copied");
+    expect(screen.getByRole("button", { name: "复制经由邮箱 relay@domain-b.test" }).querySelector(".lucide-check")).toBeInTheDocument();
+    expect(screen.getByText("已复制")).toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent("relay@domain-b.test 已复制");
+
+    fireEvent.click(screen.getByRole("button", { name: "复制邮箱地址 sender@example.test" }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith("sender@example.test"));
+    expect(screen.getByRole("button", { name: "复制邮箱地址 sender@example.test" })).toHaveAttribute("data-copy-state", "copied");
+    expect(screen.getByRole("button", { name: "复制邮箱地址 mail@example.test" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "复制邮箱地址 copy@example.test" })).toBeInTheDocument();
+
+    writeText.mockRejectedValueOnce(new Error("clipboard denied"));
+    fireEvent.click(screen.getByRole("button", { name: "复制邮箱地址 copy@example.test" }));
+    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("copy@example.test 复制失败"));
+    expect(screen.getByRole("button", { name: "复制邮箱地址 copy@example.test" })).toHaveAttribute("data-copy-state", "error");
+
     fireEvent.click(screen.getByRole("button", { name: "复制 123456" }));
     await waitFor(() => expect(writeText).toHaveBeenCalledWith("123456"));
     expect(screen.getByRole("status")).toHaveTextContent("验证码已复制");
 
-    fireEvent.click(screen.getByRole("button", { name: "快速退订" }));
+    fireEvent.click(screen.getByRole("button", { name: "退订" }));
     expect(await screen.findByText("确认前往 example.test 退订？")).toBeInTheDocument();
     expect(screen.getByRole("alertdialog")).not.toHaveClass("modal-box");
     expect(open).not.toHaveBeenCalled();
@@ -436,7 +541,8 @@ describe("mail body isolation", () => {
     fireEvent.click(screen.getByRole("button", { name: "复制 123456" }));
     await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("验证码复制失败"));
 
-    view.rerender(<MessageDetailView message={{ ...message, id: "message-actions-3", unsubscribeUrl: "javascript:alert(1)" }} onBack={vi.fn()} onMark={vi.fn()} />);
-    expect(screen.queryByRole("button", { name: "快速退订" })).not.toBeInTheDocument();
+    view.rerender(<MessageDetailView message={{ ...message, id: "message-actions-3", read: true, unsubscribeUrl: "javascript:alert(1)" }} onBack={vi.fn()} onMark={vi.fn()} />);
+    expect(screen.getByRole("button", { name: "标记为未读" }).querySelector(".lucide-mail-open")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "退订" })).not.toBeInTheDocument();
   });
 });

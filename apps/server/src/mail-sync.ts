@@ -168,13 +168,20 @@ function safeInlineImageDataUrl(type: InlineImageType, content: Buffer): string 
 export class MailboxSynchronizer {
   constructor(private readonly db: AppDatabase, private readonly events: EventBroker) {}
 
-  async syncFolder(client: ImapFlow, account: StoredAccount, kind: FolderKind, path: string, max: number): Promise<string> {
+  async syncFolder(
+    client: ImapFlow,
+    account: StoredAccount,
+    kind: FolderKind,
+    path: string,
+    max: number,
+    mailboxKind: "inbox" | "junk" | "custom" = kind
+  ): Promise<string> {
     const change: MailboxChange = { accountId: account.id, folder: kind, addedIds: [], updatedIds: [], deletedIds: [] };
     const lock = await client.getMailboxLock(path);
     try {
       const uidValidity = String(client.mailbox && client.mailbox.uidValidity ? client.mailbox.uidValidity : "0");
-      const prior = this.db.getFolderState(account.id, kind);
-      if (prior && prior.uidValidity !== uidValidity) change.deletedIds.push(...this.db.resetFolder(account.id, kind));
+      const prior = this.db.getFolderState(account.id, path);
+      if (prior && prior.uidValidity !== uidValidity) change.deletedIds.push(...this.db.resetMailbox(account.id, path));
       const exists = client.mailbox ? client.mailbox.exists : 0;
       const start = Math.max(1, exists - max + 1);
       const messages = exists > 0
@@ -186,7 +193,7 @@ export class MailboxSynchronizer {
       const recentUids = messages.map((message) => message.uid);
       for (const message of messages) {
         const read = message.flags?.has("\\Seen") ?? false;
-        const known = this.db.getKnownMessage(account.id, kind, uidValidity, message.uid);
+        const known = this.db.getKnownMessage(account.id, path, uidValidity, message.uid);
         if (known && known.htmlPolicyVersion === MAIL_HTML_POLICY_VERSION) {
           let changed = false;
           if (known.classificationVersion !== MAIL_CLASSIFICATION_VERSION) {
@@ -205,7 +212,7 @@ export class MailboxSynchronizer {
           continue;
         }
         const displayTime = this.displayTime(message.envelope?.date, message.internalDate);
-        if (!known && !this.db.isInRetentionWindow(account.id, displayTime, kind, message.uid)) continue;
+        if (!known && !this.db.isInRetentionWindow(account.id, displayTime, kind, path, message.uid)) continue;
         const content = await this.fetchContent(client, account, message.uid, message.envelope, message.headers, planBodyParts(message.bodyStructure));
         const id = this.db.upsertMessage({
           ...(known ? { id: known.id } : {}),
@@ -214,8 +221,8 @@ export class MailboxSynchronizer {
         });
         (known ? change.updatedIds : change.addedIds).push(id);
       }
-      change.deletedIds.push(...this.db.removeMissingFolderMessages(account.id, kind, uidValidity, recentUids));
-      this.db.setFolderState(account.id, kind, path, uidValidity);
+      change.deletedIds.push(...this.db.removeMissingFolderMessages(account.id, path, uidValidity, recentUids));
+      this.db.setFolderState(account.id, mailboxKind, path, uidValidity);
       for (const removed of this.db.enforceRetention(account.id)) {
         if (removed.folder === kind) change.deletedIds.push(removed.id);
         else this.publishChange({ accountId: account.id, folder: removed.folder, addedIds: [], updatedIds: [], deletedIds: [removed.id] });

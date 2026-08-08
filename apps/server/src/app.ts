@@ -33,6 +33,19 @@ const accountUpdateSchema = z.object({
 const accountOrderSchema = z.object({
   accountIds: z.array(z.uuid()).max(1000)
 }).refine((value) => new Set(value.accountIds).size === value.accountIds.length, "账号排序不能包含重复项");
+const syncFoldersSchema = z.object({
+  folders: z.array(z.object({
+    path: z.string().trim().min(1).max(1000),
+    mode: z.enum(["idle", "polling"])
+  })).max(20)
+}).superRefine((value, context) => {
+  if (new Set(value.folders.map((folder) => folder.path)).size !== value.folders.length) {
+    context.addIssue({ code: "custom", message: "同步文件夹不能重复", path: ["folders"] });
+  }
+  if (value.folders.filter((folder) => folder.mode === "idle").length > 5) {
+    context.addIssue({ code: "custom", message: "最多可为 5 个自定义文件夹启用 IDLE", path: ["folders"] });
+  }
+});
 const messageListSchema = z.object({
   accountId: z.string().uuid().optional(),
   view: z.enum(["all", "unread", "junk"]).default("all"),
@@ -43,7 +56,7 @@ const messageListSchema = z.object({
   after: z.iso.datetime({ offset: true }).optional(),
   before: z.iso.datetime({ offset: true }).optional(),
   cursor: z.string().max(1000).optional(),
-  limit: z.coerce.number().int().min(1).max(100).default(50)
+  limit: z.coerce.number().int().min(1).max(100).default(100)
 });
 
 function authorized(request: FastifyRequest, token: string): boolean {
@@ -141,6 +154,24 @@ export async function buildApp(config: AppConfig, dependencies: AppDependencies 
     api.post<{ Params: { id: string } }>("/accounts/:id/sync", async (request, reply) => {
       return reply.code(202).send(imap.triggerSync(request.params.id));
     });
+    api.get<{ Params: { id: string } }>("/accounts/:id/mailboxes", async (request) => {
+      try {
+        return await imap.listMailboxes(request.params.id);
+      } catch (error) {
+        if (error instanceof AccountNotFoundError) throw error;
+        request.log.warn({ err: error, accountId: request.params.id }, "IMAP mailbox discovery failed");
+        throw new HttpError(502, "IMAP_MAILBOX_LIST_FAILED", "无法读取 IMAP 文件夹");
+      }
+    });
+    api.put<{ Params: { id: string } }>("/accounts/:id/sync-folders", async (request) => {
+      try {
+        return await imap.updateSyncFolders(request.params.id, syncFoldersSchema.parse(request.body).folders);
+      } catch (error) {
+        if (error instanceof ZodError || error instanceof InputError || error instanceof AccountNotFoundError) throw error;
+        request.log.warn({ err: error, accountId: request.params.id }, "IMAP sync folder update failed");
+        throw new HttpError(502, "IMAP_SYNC_FOLDER_UPDATE_FAILED", "同步文件夹保存失败");
+      }
+    });
 
     api.get("/messages", async (request, reply) => {
       return db.listMessages(messageListSchema.parse(request.query));
@@ -174,7 +205,8 @@ export async function buildApp(config: AppConfig, dependencies: AppDependencies 
     api.patch("/settings", async (request, reply) => {
       const body = z.object({
         maxMessagesPerAccount: z.number().int().min(1).max(10000).optional(),
-        pollIntervalSeconds: z.number().int().min(5).max(3600).optional()
+        pollIntervalSeconds: z.number().int().min(5).max(3600).optional(),
+        pageSize: z.number().int().min(10).max(100).optional()
       }).refine((value) => Object.keys(value).length > 0, "至少提供一个设置字段").parse(request.body);
       const previous = db.getSettings();
       const result = db.updateSettings(body);

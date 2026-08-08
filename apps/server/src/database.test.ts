@@ -103,6 +103,32 @@ describe("AppDatabase", () => {
     db.close();
   });
 
+  it("isolates custom mailbox UIDs, encrypts paths, and removes only deselected cache", () => {
+    const { db, path } = database();
+    const account = db.createAccount({ email: "folders@gmail.com", password: "secret" });
+    const firstPath = "Projects/Forwarded-Private";
+    const secondPath = "Archive/Receipts-Private";
+    expect(db.updateSyncFolders(account.id, [
+      { path: firstPath, mode: "idle" }, { path: secondPath, mode: "polling" }
+    ])?.account).toMatchObject({ syncFolderCount: 2 });
+    for (const [mailboxPath, subject] of [[firstPath, "forwarded"], [secondPath, "receipt"]] as const) {
+      db.upsertMessage({
+        accountId: account.id, folder: "inbox", mailboxPath, uid: 7, uidValidity: "1", read: false,
+        displayTime: "2026-01-01T00:00:00.000Z",
+        content: { subject, from: [], to: [], cc: [], preview: "", text: "", html: null, attachments: [] }
+      });
+    }
+    expect(db.listMessages({ accountId: account.id, view: "all", limit: 50 }).items).toHaveLength(2);
+
+    const removed = db.updateSyncFolders(account.id, [{ path: secondPath, mode: "polling" }]);
+    expect(removed?.removed).toHaveLength(1);
+    expect(db.listMessages({ accountId: account.id, view: "all", limit: 50 }).items.map((message) => message.subject)).toEqual(["receipt"]);
+    db.close();
+    const bytes = readFileSync(path).toString("utf8");
+    expect(bytes).not.toContain(firstPath);
+    expect(bytes).not.toContain(secondPath);
+  });
+
   it("persists an explicit account order and appends new accounts", () => {
     const { db } = database();
     const first = db.createAccount({ email: "first@gmail.com", password: "secret" });
@@ -157,22 +183,24 @@ describe("AppDatabase", () => {
     db.raw.prepare("UPDATE accounts SET config_enc = ? WHERE id = ?")
       .run(db.crypto.encrypt({ email: stored.email, imap: stored.imap }), account.id);
     expect(db.listAccounts()[0]!.aliases).toEqual([]);
-    db.raw.exec("ALTER TABLE settings DROP COLUMN poll_interval_seconds; ALTER TABLE accounts DROP COLUMN sync_mode; ALTER TABLE accounts DROP COLUMN sort_order; PRAGMA user_version = 1;");
+    db.raw.exec("ALTER TABLE settings DROP COLUMN poll_interval_seconds; ALTER TABLE settings DROP COLUMN page_size; ALTER TABLE accounts DROP COLUMN sync_mode; ALTER TABLE accounts DROP COLUMN sort_order; PRAGMA user_version = 1;");
     db.close();
 
     const migrated = new AppDatabase(path, "t".repeat(32));
-    expect(migrated.raw.pragma("user_version", { simple: true })).toBe(3);
-    expect(migrated.getSettings()).toEqual({ maxMessagesPerAccount: 100, pollIntervalSeconds: 10 });
+    expect(migrated.raw.pragma("user_version", { simple: true })).toBe(5);
+    expect(migrated.getSettings()).toEqual({ maxMessagesPerAccount: 100, pollIntervalSeconds: 10, pageSize: 100 });
     expect(migrated.listAccounts()[0]).toMatchObject({ email: "migration@qq.com", syncMode: null });
     migrated.close();
   });
 
-  it("updates polling and retention settings independently", () => {
+  it("updates polling, retention and pagination settings independently", () => {
     const { db } = database();
-    expect(db.updateSettings({ pollIntervalSeconds: 25 }).settings).toEqual({ maxMessagesPerAccount: 100, pollIntervalSeconds: 25 });
-    expect(db.updateSettings({ maxMessagesPerAccount: 80 }).settings).toEqual({ maxMessagesPerAccount: 80, pollIntervalSeconds: 25 });
+    expect(db.updateSettings({ pollIntervalSeconds: 25 }).settings).toEqual({ maxMessagesPerAccount: 100, pollIntervalSeconds: 25, pageSize: 100 });
+    expect(db.updateSettings({ maxMessagesPerAccount: 80 }).settings).toEqual({ maxMessagesPerAccount: 80, pollIntervalSeconds: 25, pageSize: 100 });
+    expect(db.updateSettings({ pageSize: 60 }).settings).toEqual({ maxMessagesPerAccount: 80, pollIntervalSeconds: 25, pageSize: 60 });
     expect(() => db.updateSettings({ pollIntervalSeconds: 4 })).toThrow();
-    expect(db.getSettings()).toEqual({ maxMessagesPerAccount: 80, pollIntervalSeconds: 25 });
+    expect(() => db.updateSettings({ pageSize: 101 })).toThrow();
+    expect(db.getSettings()).toEqual({ maxMessagesPerAccount: 80, pollIntervalSeconds: 25, pageSize: 60 });
     db.close();
   });
 

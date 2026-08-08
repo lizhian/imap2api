@@ -58,8 +58,10 @@ describe("HTTP API", () => {
     expect((await app.inject({ method: "GET", url: "/healthz" })).json()).toEqual({ status: "ok" });
     const response = await app.inject({ method: "PATCH", url: "/api/v1/settings", headers: { authorization: `Bearer ${token}` }, payload: { maxMessagesPerAccount: 0 } });
     expect(response.statusCode).toBe(400);
+    const invalidPageSize = await app.inject({ method: "PATCH", url: "/api/v1/settings", headers: { authorization: `Bearer ${token}` }, payload: { pageSize: 101 } });
+    expect(invalidPageSize.statusCode).toBe(400);
     const updated = await app.inject({ method: "PATCH", url: "/api/v1/settings", headers: { authorization: `Bearer ${token}` }, payload: { pollIntervalSeconds: 25 } });
-    expect(updated.json()).toEqual({ maxMessagesPerAccount: 100, pollIntervalSeconds: 25 });
+    expect(updated.json()).toEqual({ maxMessagesPerAccount: 100, pollIntervalSeconds: 25, pageSize: 100 });
     expect(applySettings).toHaveBeenCalledWith(10);
     await app.close();
   });
@@ -204,6 +206,44 @@ describe("HTTP API", () => {
     const connection = await app.inject({ method: "POST", url: `/api/v1/accounts/${account.id}/test`, headers });
     expect(connection.statusCode).toBe(502);
     expect(connection.json()).toMatchObject({ error: { code: "IMAP_CONNECTION_FAILED" } });
+
+    await app.close();
+    db.close();
+  });
+
+  it("lists and validates per-account synchronization folders", async () => {
+    const appConfig = config();
+    const db = new AppDatabase(appConfig.databasePath, token);
+    const account = db.createAccount({ email: "folders@qq.com", password: "secret" });
+    const imap = new ImapService(db);
+    vi.spyOn(imap, "start").mockImplementation(() => undefined);
+    const list = vi.spyOn(imap, "listMailboxes").mockResolvedValue({ items: [{
+      path: "INBOX", name: "INBOX", depth: 0, kind: "inbox", selectable: false,
+      available: true, selectedMode: null, cachedMessageCount: 0
+    }] });
+    const update = vi.spyOn(imap, "updateSyncFolders").mockResolvedValue({ ...account, syncFolderCount: 1 });
+    const app = await buildApp(appConfig, { db, imap });
+    const headers = { authorization: `Bearer ${token}` };
+
+    const listed = await app.inject({ method: "GET", url: `/api/v1/accounts/${account.id}/mailboxes`, headers });
+    expect(listed.statusCode).toBe(200);
+    expect(listed.json().items[0]).toMatchObject({ path: "INBOX", selectable: false });
+    expect(list).toHaveBeenCalledWith(account.id);
+
+    const invalid = await app.inject({
+      method: "PUT", url: `/api/v1/accounts/${account.id}/sync-folders`, headers,
+      payload: { folders: Array.from({ length: 6 }, (_, index) => ({ path: `Folder-${index}`, mode: "idle" })) }
+    });
+    expect(invalid.statusCode).toBe(400);
+    expect(update).not.toHaveBeenCalled();
+
+    const saved = await app.inject({
+      method: "PUT", url: `/api/v1/accounts/${account.id}/sync-folders`, headers,
+      payload: { folders: [{ path: "Forwarded", mode: "polling" }] }
+    });
+    expect(saved.statusCode).toBe(200);
+    expect(saved.json()).toMatchObject({ syncFolderCount: 1 });
+    expect(update).toHaveBeenCalledWith(account.id, [{ path: "Forwarded", mode: "polling" }]);
 
     await app.close();
     db.close();

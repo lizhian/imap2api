@@ -69,9 +69,10 @@ curl -X POST \
 | `ProviderId` | `auto`, `qq`, `gmail`, `icloud`, `outlook`, `qq-enterprise`, `163`, `custom` | 邮箱服务商；`auto` 仅用于入参自动识别 |
 | `ConnectionStatus` | `pending`, `connecting`, `connected`, `warning`, `error` | 账号连接状态 |
 | `SyncMode` | `idle`, `polling` | 实时 IDLE 或定时轮询；尚未建立会话时为 `null` |
+| `SyncFolderMode` | `idle`, `polling` | 自定义同步文件夹使用独立 IDLE 连接或账号级共享轮询连接 |
 | `MessageView` | `all`, `unread`, `junk` | 邮件列表视图 |
 | `FolderKind` | `inbox`, `junk` | 收件箱或垃圾箱 |
-| `MessageLabel` | `forwarded`, `verification_code`, `unsubscribe` | 转发邮件、验证码邮件、可退订邮件 |
+| `MessageLabel` | `forwarded`, `verification_code`, `unsubscribe` | 转发邮件、验证码邮件、退订邮件 |
 
 连接状态含义：
 
@@ -116,6 +117,9 @@ curl -X POST \
 | `hasCredential` | `true` | 表示服务端已保存凭据，不代表返回了凭据 |
 | `status` | `ConnectionStatus` | 当前连接状态 |
 | `syncMode` | `SyncMode \| null` | 当前同步模式 |
+| `messageCount` | `integer` | 当前账号的本地缓存邮件总数 |
+| `unreadCount` | `integer` | 当前账号的本地未读邮件数 |
+| `syncFolderCount` | `integer` | 已选择的自定义同步文件夹数，不含系统收件箱和垃圾箱 |
 | `lastSyncedAt` | `string \| null` | 最近一次成功同步时间 |
 | `lastError` | `string \| null` | 最近连接错误摘要 |
 | `createdAt` | `string` | 创建时间 |
@@ -163,6 +167,8 @@ curl -X POST \
 | `DELETE` | `/accounts/:id` | 是 | `204` | 删除账号及其本地缓存 |
 | `POST` | `/accounts/:id/test` | 是 | `200` | 测试 IMAP 连接 |
 | `POST` | `/accounts/:id/sync` | 是 | `202` | 触发同步 |
+| `GET` | `/accounts/:id/mailboxes` | 是 | `200` | 查询系统与可选自定义文件夹 |
+| `PUT` | `/accounts/:id/sync-folders` | 是 | `200` | 更新自定义同步文件夹及同步模式 |
 | `GET` | `/messages` | 是 | `200` | 分页查询邮件摘要 |
 | `GET` | `/messages/:id` | 是 | `200` | 查询邮件详情 |
 | `PATCH` | `/messages/:id/read` | 是 | `200` | 标记单封邮件已读或未读 |
@@ -383,6 +389,57 @@ POST /api/v1/accounts/:id/sync
 
 接口仅表示触发请求已接受，不代表同步已经完成。调用方应通过 SSE 的 `account.changed`、`messages.changed` 事件，或重新查询账号状态和邮件列表来获得最终结果。
 
+### 5.7 查询可同步文件夹
+
+```http
+GET /api/v1/accounts/:id/mailboxes
+```
+
+接口会即时连接远端 IMAP 并返回文件夹列表。收件箱和垃圾箱由系统强制同步，`selectable` 为 `false`；其他无 special-use 且不含 `\\Noselect` 的文件夹可由用户选择。已配置但远端暂时缺失的文件夹仍会返回，`available` 为 `false`。
+
+```json
+{
+  "items": [
+    {
+      "path": "INBOX/Forwarded",
+      "name": "Forwarded",
+      "depth": 1,
+      "kind": "custom",
+      "selectable": true,
+      "available": true,
+      "selectedMode": "polling",
+      "cachedMessageCount": 28
+    }
+  ]
+}
+```
+
+文件夹路径来自 IMAP 服务器，客户端应按普通文本处理。服务端只在加密配置和加密邮件传输信息中保存路径。
+
+### 5.8 更新同步文件夹
+
+```http
+PUT /api/v1/accounts/:id/sync-folders
+Content-Type: application/json
+
+{
+  "folders": [
+    { "path": "INBOX/Forwarded", "mode": "idle" },
+    { "path": "Archive/Receipts", "mode": "polling" }
+  ]
+}
+```
+
+- 每个账号最多选择 20 个自定义文件夹，其中最多 5 个使用 `idle`。
+- 新增的路径必须存在且可选择；远端暂时缺失的已配置路径可以继续保留。
+- `idle` 文件夹各使用一个长期连接；`polling` 文件夹在账号内共享一个连接并顺序同步。
+- 取消选择会删除该文件夹的本地缓存并通过 SSE 发送删除 ID，不会删除远端邮件。
+- 自定义文件夹邮件在公开邮件列表中继续使用 `folder: "inbox"`，不会通过 API 或 SSE 暴露真实路径。
+
+`200 OK`：返回更新后的 `Account`，同步会话随后按新配置重启。
+
+可能的错误：`400 VALIDATION_ERROR`、`404 ACCOUNT_NOT_FOUND`、`502 IMAP_SYNC_FOLDER_UPDATE_FAILED`。
+
 可能的业务错误：`404 ACCOUNT_NOT_FOUND`。
 
 ## 6. 邮件接口
@@ -402,7 +459,7 @@ Query 参数：
 | `after` | `string(datetime)` | 否 | 无 | `displayTime >= after` |
 | `before` | `string(datetime)` | 否 | 无 | `displayTime < before` |
 | `cursor` | `string` | 否 | 无 | 上一页返回的 `nextCursor`，最长 1000 字符；调用方不得解析或修改 |
-| `limit` | `integer` | 否 | `50` | 1–100 |
+| `limit` | `integer` | 否 | `100` | 1–100 |
 
 `after` 和 `before` 必须为带时区的 ISO 8601 时间。结果按 `displayTime` 降序排列；时间相同时按邮件 ID 降序排列。
 
@@ -588,7 +645,8 @@ GET /api/v1/settings
 ```json
 {
   "maxMessagesPerAccount": 100,
-  "pollIntervalSeconds": 10
+  "pollIntervalSeconds": 10,
+  "pageSize": 100
 }
 ```
 
@@ -596,6 +654,7 @@ GET /api/v1/settings
 | --- | --- | --- | --- |
 | `maxMessagesPerAccount` | `integer` | 1–10000 | 每个账号在收件箱和垃圾箱之间合计保留的最大缓存邮件数 |
 | `pollIntervalSeconds` | `integer` | 5–3600 | 不支持 IDLE 的会话轮询间隔；支持 IDLE 的会话不按此间隔轮询 |
+| `pageSize` | `integer` | 10–100 | 管理端邮件列表每页加载的邮件数量 |
 
 ### 7.2 修改设置
 
@@ -608,7 +667,8 @@ PATCH /api/v1/settings
 ```json
 {
   "maxMessagesPerAccount": 200,
-  "pollIntervalSeconds": 30
+  "pollIntervalSeconds": 30,
+  "pageSize": 60
 }
 ```
 

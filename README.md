@@ -4,7 +4,7 @@
 
 ## 功能
 
-- 多 IMAP 账号管理、连接测试、IDLE 实时同步、轮询回退和手动同步
+- 多 IMAP 账号管理、连接测试、自定义同步文件夹、IDLE 实时同步、共享轮询和手动同步
 - 全部、未读、垃圾箱邮件列表及安全正文查看
 - 单封已读/未读和当前账号缓存邮件全部已读
 - QQ、Gmail、iCloud、Outlook、QQ 企业邮箱、163 邮箱预设
@@ -99,14 +99,16 @@ curl -H "Authorization: Bearer $IMAP2API_TOKEN" \
 | `PATCH/DELETE` | `/api/v1/accounts/:id` | 更新或删除账号 |
 | `POST` | `/api/v1/accounts/:id/test` | 测试 IMAP 连接 |
 | `POST` | `/api/v1/accounts/:id/sync` | 触发同步 |
+| `GET` | `/api/v1/accounts/:id/mailboxes` | 查询可同步文件夹 |
+| `PUT` | `/api/v1/accounts/:id/sync-folders` | 配置自定义同步文件夹及模式 |
 | `GET` | `/api/v1/messages` | 查询邮件列表 |
 | `GET` | `/api/v1/messages/:id` | 查询邮件详情 |
 | `PATCH` | `/api/v1/messages/:id/read` | 标记已读或未读 |
 | `POST` | `/api/v1/accounts/:id/messages/read-all` | 当前账号缓存全部已读 |
-| `GET/PATCH` | `/api/v1/settings` | 查询或修改缓存上限与轮询间隔 |
+| `GET/PATCH` | `/api/v1/settings` | 查询或修改缓存上限、分页大小与轮询间隔 |
 | `GET` | `/api/v1/events` | 订阅邮件缓存和账号状态 SSE 事件 |
 
-邮件列表支持 `accountId`、`view=all|unread|junk`、`after`、`before`、`cursor` 和 `limit`。时间参数使用带时区的 ISO 8601 格式，`limit` 默认 50、最大 100。
+邮件列表支持 `accountId`、`view=all|unread|junk`、`after`、`before`、`cursor` 和 `limit`。时间参数使用带时区的 ISO 8601 格式，`limit` 默认 100、最大 100；管理端使用系统设置中的分页大小。
 
 SSE 使用相同的 Bearer Token，不接受 URL Token。连接建立后会先发送 `ready`，客户端收到 `messages.changed` 后可重新查询邮件列表：
 
@@ -123,7 +125,7 @@ Gmail、iCloud、QQ、163 等服务通常要求先开启 IMAP，并使用应用�
 
 - Token 不写入数据库；浏览器仅在当前标签会话中保存 Token。
 - 邮箱地址、服务器配置、凭据、主题、通信地址、正文、附件名和错误详情均加密存储。
-- 时间、UID、文件夹、已读状态等查询索引保持明文。
+- 时间、UID、文件夹类型、已读状态等查询索引保持明文；真实 IMAP 文件夹路径加密存储，仅保留不可逆索引。
 - 邮件 HTML 会保留常见排版和内联样式，移除脚本、表单、事件属性及可执行内容，并在不允许脚本、弹窗和顶层导航的受限 iframe 中展示。远程图片默认阻止，用户可为当前邮件单独加载；安全且受大小限制的 CID 内嵌图片会本地化显示。正文链接由父页面拦截，确认目标地址后才在新标签打开。
 - 除受限的 CID 正文图片外，普通附件只保存文件名，不下载到 SQLite，也不提供附件管理或下载接口。
 

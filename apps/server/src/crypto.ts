@@ -39,4 +39,8 @@ export class CryptoService {
   fingerprint(value: string): string {
     return createHmac("sha256", this.indexKey).update(value.trim().toLowerCase()).digest("hex");
   }
+
+  mailboxFingerprint(value: string): string {
+    return createHmac("sha256", this.indexKey).update("mailbox:\0").update(value).digest("hex");
+  }
 }

@@ -1,6 +1,7 @@
 export type ProviderId = "auto" | "qq" | "gmail" | "icloud" | "outlook" | "qq-enterprise" | "163" | "custom";
 export type ConnectionStatus = "pending" | "connecting" | "connected" | "warning" | "error";
 export type SyncMode = "idle" | "polling";
+export type SyncFolderMode = "idle" | "polling";
 export type MessageView = "all" | "unread" | "junk";
 export type FolderKind = "inbox" | "junk";
 export type MessageLabel = "forwarded" | "verification_code" | "unsubscribe";
@@ -24,10 +25,35 @@ export interface Account {
   syncMode: SyncMode | null;
   messageCount: number;
   unreadCount: number;
+  syncFolderCount: number;
   lastSyncedAt: string | null;
   lastError: string | null;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface SyncFolderConfig {
+  path: string;
+  mode: SyncFolderMode;
+}
+
+export interface MailboxOption {
+  path: string;
+  name: string;
+  depth: number;
+  kind: "inbox" | "junk" | "custom";
+  selectable: boolean;
+  available: boolean;
+  selectedMode: SyncFolderMode | null;
+  cachedMessageCount: number;
+}
+
+export interface MailboxListResponse {
+  items: MailboxOption[];
+}
+
+export interface SyncFoldersUpdate {
+  folders: SyncFolderConfig[];
 }
 
 export interface AccountInput {
@@ -86,6 +112,7 @@ export interface MessageListResponse {
 export interface Settings {
   maxMessagesPerAccount: number;
   pollIntervalSeconds: number;
+  pageSize: number;
 }
 
 export interface SyncTriggerResult {

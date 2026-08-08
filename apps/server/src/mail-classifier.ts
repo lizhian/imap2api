@@ -2,7 +2,7 @@ import type { Address, MessageLabel } from "@imap2api/shared";
 import { DomUtils, parseDocument } from "htmlparser2";
 import { simpleParser, type AddressObject } from "mailparser";
 
-export const MAIL_CLASSIFICATION_VERSION = 2;
+export const MAIL_CLASSIFICATION_VERSION = 3;
 
 export const FORWARDING_HEADER_FIELDS = [
   "Resent-Sender", "Resent-From", "X-Forwarded-For", "Delivered-To", "X-Original-To",

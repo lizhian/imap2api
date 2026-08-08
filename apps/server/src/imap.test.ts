@@ -45,6 +45,7 @@ class DeadlockDetectingClient extends EventEmitter {
   searchCalls = 0;
   listCalls = 0;
   statusCalls = 0;
+  readonly storePaths: string[] = [];
   options = { disableAutoIdle: false };
   fetchGate: Promise<void> | null = null;
   readonly lockFailures = new Set<string>();
@@ -53,7 +54,7 @@ class DeadlockDetectingClient extends EventEmitter {
   private idleResolve: (() => void) | null = null;
   private selectedPath: string | null = null;
 
-  constructor(private readonly idleSupported = true, private readonly includeJunk = false) {
+  constructor(private readonly idleSupported = true, private readonly includeJunk = false, private readonly customMailboxes: Array<{ path: string; name: string; delimiter?: string; specialUse?: string; flags?: Set<string> }> = []) {
     super();
     this.capabilities = new Map(idleSupported ? [["IDLE", true]] : []);
   }
@@ -73,7 +74,8 @@ class DeadlockDetectingClient extends EventEmitter {
     this.listCalls++;
     return [
       { path: "INBOX", name: "INBOX", specialUse: "\\Inbox" },
-      ...(this.includeJunk ? [{ path: "Junk", name: "Junk", specialUse: "\\Junk" }] : [])
+      ...(this.includeJunk ? [{ path: "Junk", name: "Junk", specialUse: "\\Junk" }] : []),
+      ...this.customMailboxes
     ];
   }
   async getMailboxLock(path: string) {
@@ -83,6 +85,7 @@ class DeadlockDetectingClient extends EventEmitter {
   }
   async messageFlagsAdd(): Promise<boolean> {
     if (this.selectedPath && this.storeFailures.has(this.selectedPath)) throw new Error(`cannot store ${this.selectedPath}`);
+    if (this.selectedPath) this.storePaths.push(this.selectedPath);
     return true;
   }
   async search() {
@@ -220,6 +223,52 @@ describe("ImapService", () => {
     db.close();
   });
 
+  it("discovers selectable mailboxes and preserves configured missing folders", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "imap2api-mailboxes-")); dirs.push(dir);
+    const db = new AppDatabase(join(dir, "test.db"), "t".repeat(32));
+    const account = db.createAccount({ email: "mail@qq.com", password: "authorization-code" });
+    db.updateSyncFolders(account.id, [{ path: "Missing/Relay", mode: "idle" }]);
+    const custom = [
+      { path: "Projects/Relay", name: "Relay", delimiter: "/" },
+      { path: "Drafts", name: "Drafts", specialUse: "\\Drafts" },
+      { path: "Container", name: "Container", flags: new Set(["\\Noselect"]) }
+    ];
+    const service = new ImapService(db, new EventBroker(), () => new DeadlockDetectingClient(true, true, custom) as unknown as ImapFlow);
+
+    await expect(service.listMailboxes(account.id)).resolves.toMatchObject({ items: [
+      { path: "INBOX", kind: "inbox", selectable: false, available: true },
+      { path: "Junk", kind: "junk", selectable: false, available: true },
+      { path: "Projects/Relay", kind: "custom", selectable: true, depth: 1, selectedMode: null },
+      { path: "Missing/Relay", kind: "custom", selectable: true, available: false, selectedMode: "idle" }
+    ] });
+    await service.stop();
+    db.close();
+  });
+
+  it("shares one connection for polling custom folders and keeps IDLE folders independent", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "imap2api-custom-sessions-")); dirs.push(dir);
+    const db = new AppDatabase(join(dir, "test.db"), "t".repeat(32));
+    const account = db.createAccount({ email: "mail@qq.com", password: "authorization-code" });
+    db.updateSyncFolders(account.id, [
+      { path: "Polling/A", mode: "polling" }, { path: "Polling/B", mode: "polling" }, { path: "Realtime", mode: "idle" }
+    ]);
+    const custom = [
+      { path: "Polling/A", name: "A", delimiter: "/" }, { path: "Polling/B", name: "B", delimiter: "/" },
+      { path: "Realtime", name: "Realtime", delimiter: "/" }
+    ];
+    const clients: DeadlockDetectingClient[] = [];
+    const service = new ImapService(db, new EventBroker(), () => {
+      const client = new DeadlockDetectingClient(true, false, custom); clients.push(client); return client as unknown as ImapFlow;
+    });
+
+    await service.sync(account.id);
+    expect(clients).toHaveLength(4);
+    expect(clients.filter((client) => client.options.disableAutoIdle)).toHaveLength(1);
+    expect(clients.filter((client) => client.usable && !client.options.disableAutoIdle)).toHaveLength(2);
+    await service.stop();
+    db.close();
+  });
+
   it("serializes duplicate manual syncs and handles mailbox notifications on the persistent session", async () => {
     const dir = mkdtempSync(join(tmpdir(), "imap2api-events-")); dirs.push(dir);
     const db = new AppDatabase(join(dir, "test.db"), "t".repeat(32));
@@ -302,6 +351,26 @@ describe("ImapService", () => {
     expect(messages.find((message) => message.folder === "junk")?.read).toBe(false);
 
     await service.stop();
+    db.close();
+  });
+
+  it("marks unread messages in each real custom mailbox path", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "imap2api-custom-read-all-")); dirs.push(dir);
+    const db = new AppDatabase(join(dir, "test.db"), "t".repeat(32));
+    const account = db.createAccount({ email: "mail@qq.com", password: "authorization-code" });
+    for (const [mailboxPath, uid] of [["Relay/A", 1], ["Relay/B", 1]] as const) {
+      db.upsertMessage({
+        accountId: account.id, folder: "inbox", mailboxPath, uid, uidValidity: "1", read: false,
+        displayTime: "2026-01-01T00:00:00.000Z",
+        content: { subject: mailboxPath, from: [], to: [], cc: [], preview: "", text: "", html: null, attachments: [] }
+      });
+    }
+    const client = new DeadlockDetectingClient();
+    const service = new ImapService(db, new EventBroker(), () => client as unknown as ImapFlow);
+
+    await expect(service.markAllRead(account.id)).resolves.toEqual({ count: 2, failedFolders: [] });
+    expect(client.storePaths.sort()).toEqual(["Relay/A", "Relay/B"]);
+    expect(db.listMessages({ accountId: account.id, view: "unread", limit: 50 }).items).toEqual([]);
     db.close();
   });
 

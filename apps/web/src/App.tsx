@@ -1,14 +1,14 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent as ReactDragEvent, type FormEvent, type KeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent as ReactDragEvent, type FormEvent, type KeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
 import * as AlertDialog from "@radix-ui/react-alert-dialog";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import {
   Archive, ArrowLeft, Check, ChevronLeft, ChevronRight, CircleAlert, CircleCheck,
-  Cloud, Copy, Edit3, ExternalLink, Eye, EyeOff, FileText, Forward, GripVertical, Image as ImageIcon, Inbox, KeyRound, LogOut, Mail, MailCheck, MailOpen,
+  Cloud, Copy, Edit3, ExternalLink, Eye, EyeOff, FileText, Folder, FolderCog, Forward, GripVertical, Image as ImageIcon, Inbox, KeyRound, LogOut, Mail, MailOpen,
   Paperclip, Plus, RefreshCw, SearchX, Settings as SettingsIcon, ShieldCheck,
   SlidersHorizontal, Trash2, UserRound, X
 } from "lucide-react";
-import type { Account, AccountInput, AccountOrderUpdate, AccountUpdate, MessageDetail, MessageLabel, MessageListResponse, MessageSecondaryFilter, MessageSummary, MessageView, ProviderId, ServerEvent, Settings } from "@imap2api/shared";
+import type { Account, AccountInput, AccountOrderUpdate, AccountUpdate, MailboxListResponse, MessageDetail, MessageLabel, MessageListResponse, MessageSecondaryFilter, MessageSummary, MessageView, ProviderId, ServerEvent, Settings, SyncFolderConfig } from "@imap2api/shared";
 import { ApiClient } from "./api";
 import { Button, EmptyState, IconButton, Spinner } from "./components";
 import styles from "./styles.module.css";
@@ -23,7 +23,7 @@ const PROVIDERS: Array<{ value: ProviderId; label: string }> = [
 const MESSAGE_LABELS: Record<MessageLabel, { text: string; icon: typeof Forward }> = {
   forwarded: { text: "转发", icon: Forward },
   verification_code: { text: "验证码", icon: KeyRound },
-  unsubscribe: { text: "可退订", icon: ExternalLink }
+  unsubscribe: { text: "退订", icon: ExternalLink }
 };
 const MESSAGE_VIEWS: Array<{ value: MessageView; label: string }> = [
   { value: "all", label: "全部" }, { value: "unread", label: "未读" }, { value: "junk", label: "垃圾箱" }
@@ -61,6 +61,12 @@ export function formatRelativeDate(value: string, now = Date.now()): string {
 function senderLabel(message: MessageSummary): string {
   const sender = message.from[0];
   return sender?.name || sender?.address || "未知发件人";
+}
+
+export function canShowFullForwardedVia(metaWidth: number, senderNaturalWidth: number, fullMetaWidth: number): boolean {
+  if (metaWidth <= 0 || fullMetaWidth <= 0) return false;
+  const senderReserve = Math.min(senderNaturalWidth, Math.max(72, metaWidth * 0.42));
+  return fullMetaWidth + 8 <= metaWidth - senderReserve;
 }
 
 function abortableDelay(ms: number, signal: AbortSignal): Promise<void> {
@@ -313,6 +319,7 @@ function NavButton({ active, icon, label, onClick }: { active: boolean; icon: Re
 
 function AccountsPage({ api, accounts, reload, reorder, onNotice }: { api: ApiClient; accounts: Account[]; reload: () => Promise<void>; reorder: (accountIds: string[]) => Promise<void>; onNotice: (notice: { kind: "success" | "error"; text: string }) => void }) {
   const [editing, setEditing] = useState<Account | "new" | null>(null);
+  const [folderAccount, setFolderAccount] = useState<Account | null>(null);
   const [deleting, setDeleting] = useState<Account | null>(null);
   const [localSyncing, setLocalSyncing] = useState<Set<string>>(new Set());
   const [pollIntervalSeconds, setPollIntervalSeconds] = useState(10);
@@ -402,15 +409,18 @@ function AccountsPage({ api, accounts, reload, reorder, onNotice }: { api: ApiCl
               </span>
               <div className={styles.accountOverview}>
                 <div className={styles.accountIdentity}><span className={styles.mailAvatar}><Mail size={18} /></span><div><strong>{account.email}</strong><span>{providerLabel} · {account.imap.host} · {account.aliases.length} 个别名</span></div></div>
-                <div className={styles.accountHealth}>
-                  <div className={styles.accountConnection}><Status status={syncing ? "connecting" : account.status} /><small>{syncModeLabel}</small></div>
-                  <div className={styles.accountMetric}><span>本地缓存</span><strong>{account.messageCount ?? 0} 封 · {account.unreadCount ?? 0} 未读</strong></div>
-                  <div className={styles.accountTime}><span>最近同步</span><time dateTime={account.lastSyncedAt ?? undefined} title={formatDate(account.lastSyncedAt)}>{account.lastSyncedAt ? formatRelativeDate(account.lastSyncedAt, now) : "尚未同步"}</time>{account.lastError && <small title={account.lastError}>{account.lastError}</small>}</div>
-                </div>
+                <div className={styles.accountConnection}><Status status={syncing ? "connecting" : account.status} /><small>{syncModeLabel}</small>{account.lastError && <span className={styles.accountError} title={account.lastError}>{account.lastError}</span>}</div>
               </div>
+              <dl className={styles.accountStats} aria-label={`${account.email} 邮箱统计`}>
+                <div><dt>本地缓存</dt><dd>{account.messageCount ?? 0}<small>封</small></dd></div>
+                <div><dt>未读邮件</dt><dd>{account.unreadCount ?? 0}<small>封</small></dd></div>
+                <div><dt>自定义文件夹</dt><dd>{account.syncFolderCount ?? 0}<small>个</small></dd></div>
+                <div><dt>最近同步</dt><dd><time dateTime={account.lastSyncedAt ?? undefined} title={formatDate(account.lastSyncedAt)}>{account.lastSyncedAt ? formatRelativeDate(account.lastSyncedAt, now) : "尚未同步"}</time></dd></div>
+              </dl>
               <div className={styles.rowActions}>
                 <IconButton label="测试连接" onClick={() => void test(account)}><ShieldCheck size={17} /></IconButton>
                 <IconButton label="立即同步" disabled={syncing} onClick={() => void sync(account)}><RefreshCw className={syncing ? styles.rotating : ""} size={17} /></IconButton>
+                <IconButton label="设置同步文件夹" onClick={() => setFolderAccount(account)}><FolderCog size={17} /></IconButton>
                 <IconButton label="编辑账号" onClick={() => setEditing(account)}><Edit3 size={17} /></IconButton>
                 <IconButton label="删除账号" className={styles.dangerIcon} onClick={() => setDeleting(account)}><Trash2 size={17} /></IconButton>
               </div>
@@ -419,9 +429,84 @@ function AccountsPage({ api, accounts, reload, reorder, onNotice }: { api: ApiCl
           })}
         </div>}
       <AccountDialog open={editing !== null} account={editing === "new" ? null : editing} api={api} onOpenChange={(open) => !open && setEditing(null)} onSaved={async (message) => { setEditing(null); onNotice({ kind: "success", text: message }); await reload(); }} />
+      <SyncFoldersDialog open={Boolean(folderAccount)} account={folderAccount} api={api} onOpenChange={(open) => !open && setFolderAccount(null)} onSaved={async () => { setFolderAccount(null); onNotice({ kind: "success", text: "同步文件夹已更新" }); await reload(); }} />
       <ConfirmDialog open={Boolean(deleting)} title="删除邮箱账号？" description={deleting ? `将永久删除 ${deleting.email} 的配置和本地邮件缓存，不影响 IMAP 服务器邮件。` : ""} confirmLabel="删除账号" danger onOpenChange={(open) => !open && setDeleting(null)} onConfirm={() => void remove()} />
     </section>
   );
+}
+
+function SyncFoldersDialog({ open, account, api, onOpenChange, onSaved }: { open: boolean; account: Account | null; api: ApiClient; onOpenChange: (open: boolean) => void; onSaved: () => void }) {
+  const [data, setData] = useState<MailboxListResponse | null>(null);
+  const [selected, setSelected] = useState<Map<string, SyncFolderConfig["mode"]>>(new Map());
+  const [loading, setLoading] = useState(false); const [saving, setSaving] = useState(false);
+  const [error, setError] = useState(""); const [confirmRemoval, setConfirmRemoval] = useState(false);
+
+  const load = useCallback(async () => {
+    if (!account) return;
+    setLoading(true); setError("");
+    try {
+      const result = await api.request<MailboxListResponse>(`/accounts/${account.id}/mailboxes`);
+      setData(result);
+      setSelected(new Map(result.items.filter((item) => item.kind === "custom" && item.selectedMode).map((item) => [item.path, item.selectedMode!] as const)));
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "文件夹读取失败"); }
+    finally { setLoading(false); }
+  }, [account, api]);
+
+  useEffect(() => { if (open) void load(); else { setData(null); setError(""); setConfirmRemoval(false); } }, [open, load]);
+
+  const setFolder = (path: string, enabled: boolean, defaultMode: SyncFolderConfig["mode"] = "polling") => {
+    setSelected((current) => {
+      const next = new Map(current);
+      if (enabled) next.set(path, defaultMode); else next.delete(path);
+      return next;
+    });
+  };
+  const setMode = (path: string, mode: SyncFolderConfig["mode"]) => setSelected((current) => new Map(current).set(path, mode));
+  const persist = async () => {
+    if (!account) return;
+    setSaving(true); setError("");
+    try {
+      await api.request(`/accounts/${account.id}/sync-folders`, {
+        method: "PUT", body: JSON.stringify({ folders: [...selected].map(([path, mode]) => ({ path, mode })) })
+      });
+      onSaved();
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "同步文件夹保存失败"); }
+    finally { setSaving(false); setConfirmRemoval(false); }
+  };
+  const requestSave = () => {
+    const removesCache = data?.items.some((item) => item.kind === "custom" && item.selectedMode && !selected.has(item.path) && item.cachedMessageCount > 0);
+    if (removesCache) setConfirmRemoval(true); else void persist();
+  };
+  const customCount = selected.size;
+  const idleCount = [...selected.values()].filter((mode) => mode === "idle").length;
+
+  return <><Dialog.Root open={open} onOpenChange={onOpenChange}><Dialog.Portal><Dialog.Overlay className={styles.overlay} /><Dialog.Content className={`${styles.dialog} ${styles.folderDialog}`}>
+    <div className={styles.dialogHeader}><div><Dialog.Title>同步文件夹</Dialog.Title><Dialog.Description>{account?.email} · 收件箱和垃圾箱始终同步</Dialog.Description></div><Dialog.Close asChild><IconButton label="关闭"><X size={18} /></IconButton></Dialog.Close></div>
+    {loading ? <div className={styles.folderState}><Spinner label="正在读取文件夹" /></div> : error && !data ? <div className={styles.folderState}><p className={styles.formError} role="alert"><CircleAlert size={15} />{error}</p><Button onClick={() => void load()}><RefreshCw size={16} />重试</Button></div> : data ? <>
+      <div className={styles.folderSummary}><span>已选 {customCount}/20</span><span>IDLE {idleCount}/5</span></div>
+      <div className={styles.folderList} role="group" aria-label="可同步的 IMAP 文件夹">
+        {data.items.map((item) => {
+          const checked = item.kind !== "custom" || selected.has(item.path);
+          const mode = selected.get(item.path);
+          const disableSelect = item.kind !== "custom" || (!checked && ((!item.available && !item.selectedMode) || customCount >= 20));
+          return <div className={`${styles.folderRow} ${!item.available ? styles.folderMissing : ""}`} key={`${item.kind}:${item.path}`} style={{ "--folder-indent": `${Math.min(item.depth, 4) * 14}px` } as CSSProperties}>
+            <label className={styles.folderChoice} title={item.path}>
+              <input className="checkbox checkbox-sm" type="checkbox" checked={checked} disabled={disableSelect} onChange={(event) => setFolder(item.path, event.target.checked, item.selectedMode ?? "polling")} />
+              <Folder size={16} /><span><strong>{item.name}</strong><small>{item.path}{!item.available ? " · 远端已缺失" : item.cachedMessageCount ? ` · 已缓存 ${item.cachedMessageCount} 封` : ""}</small></span>
+            </label>
+            {item.kind === "custom" && checked ? <div className={`join ${styles.folderMode}`} aria-label={`${item.path} 同步模式`}>
+              <button type="button" className={`btn btn-xs join-item ${mode === "idle" ? styles.folderModeActive : ""}`} disabled={mode !== "idle" && idleCount >= 5} aria-pressed={mode === "idle"} onClick={() => setMode(item.path, "idle")}>IDLE</button>
+              <button type="button" className={`btn btn-xs join-item ${mode === "polling" ? styles.folderModeActive : ""}`} aria-pressed={mode === "polling"} onClick={() => setMode(item.path, "polling")}>轮询</button>
+            </div> : item.kind !== "custom" ? <span className={styles.folderFixed}>系统管理</span> : null}
+          </div>;
+        })}
+        {!data.items.length && <div className={styles.folderState}>没有可同步的文件夹</div>}
+      </div>
+      {error && <p className={styles.formError} role="alert"><CircleAlert size={15} />{error}</p>}
+      <div className={styles.dialogFooter}><Dialog.Close asChild><Button type="button">取消</Button></Dialog.Close><Button variant="primary" disabled={saving} onClick={requestSave}>{saving ? <Spinner label="正在保存" /> : "保存配置"}</Button></div>
+    </> : null}
+  </Dialog.Content></Dialog.Portal></Dialog.Root>
+  <ConfirmDialog open={confirmRemoval} title="移除本地文件夹缓存？" description="取消同步会删除这些文件夹的本地邮件缓存，不会删除 IMAP 服务器上的邮件。" confirmLabel="移除并保存" danger onOpenChange={setConfirmRemoval} onConfirm={() => void persist()} /></>;
 }
 
 function Status({ status }: { status: Account["status"] }) {
@@ -507,20 +592,28 @@ function MessagesPage({ api, accounts, accountId, onAccountChange, revision, onL
   const [selected, setSelected] = useState<string | null>(null); const [detail, setDetail] = useState<MessageDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false); const [cursor, setCursor] = useState<string | null>(null);
   const [nextCursor, setNextCursor] = useState<string | null>(null); const [history, setHistory] = useState<Array<string | null>>([]);
+  const [pageSize, setPageSize] = useState<number | null>(null);
   const [confirmAll, setConfirmAll] = useState(false);
   const [listWidth, setListWidth] = useState(380);
   const [now, setNow] = useState(Date.now());
   const workspaceRef = useRef<HTMLElement | null>(null);
 
+  useEffect(() => {
+    api.request<Settings>("/settings")
+      .then((value) => setPageSize(value.pageSize ?? 100))
+      .catch((error) => { setPageSize(100); onNotice({ kind: "error", text: error instanceof Error ? error.message : "分页设置加载失败" }); });
+  }, [api, onNotice]);
+
   const load = useCallback(async (background = false) => {
+    if (pageSize === null) return;
     if (background) setRefreshing(true); else setLoading(true);
-    const query = new URLSearchParams({ view, limit: "50" });
+    const query = new URLSearchParams({ view, limit: String(pageSize) });
     secondaryFilters.forEach((filter) => query.append("filter", filter));
     if (accountId) query.set("accountId", accountId); if (cursor) query.set("cursor", cursor);
     try { const result = await api.request<MessageListResponse>(`/messages?${query}`); setItems(result.items); setNextCursor(result.nextCursor); }
     catch (error) { onNotice({ kind: "error", text: error instanceof Error ? error.message : "邮件加载失败" }); }
     finally { if (background) setRefreshing(false); else setLoading(false); }
-  }, [accountId, api, cursor, onNotice, revision, secondaryFilters, view]);
+  }, [accountId, api, cursor, onNotice, pageSize, revision, secondaryFilters, view]);
 
   useEffect(() => { void load(); }, [load]);
   useEffect(() => { setCursor(null); setHistory([]); setSelected(null); setDetail(null); }, [accountId, secondaryFilters, view]);
@@ -602,10 +695,10 @@ function MessagesPage({ api, accounts, accountId, onAccountChange, revision, onL
       <div className={styles.messageList} aria-busy={loading}>
         {loading ? <div className={styles.centerState}><Spinner /></div> : items.length === 0 ? <EmptyState icon={<SearchX size={27} />} title="没有符合条件的邮件" /> : items.map((message) => <button key={message.id} className={`list-row ${styles.messageRow} ${selected === message.id ? styles.messageSelected : ""} ${message.read ? styles.messageRead : ""}`} onClick={() => void openMessage(message)}>
           <span className={styles.unreadDot} aria-label={message.read ? "已读" : "未读"} />
-          <span className={styles.messageMain}><span className={styles.messageMeta}><strong>{senderLabel(message)}</strong><span className={styles.messageMetaRight}><span className={styles.messageSignals}>{message.labels.length > 0 && <MessageLabels labels={message.labels} forwardedVia={message.forwardedVia} compact />}{message.hasAttachments && <Paperclip size={14} aria-label="包含附件" />}{message.folder === "junk" && <Archive size={14} aria-label="垃圾箱" />}</span><time dateTime={message.displayTime} title={formatDate(message.displayTime)}>{formatRelativeDate(message.displayTime, now)}</time></span></span><span className={styles.messageSubject}>{message.subject}</span><span className={styles.messagePreview}>{message.preview || "无正文预览"}</span></span>
+          <span className={styles.messageMain}><MessageMeta message={message} now={now} /><span className={styles.messageSubject}>{message.subject}</span><span className={styles.messagePreview}>{message.preview || "无正文预览"}</span></span>
         </button>)}
       </div>
-      <div className={styles.pagination}><Button variant="quiet" disabled={!history.length} onClick={() => { const previous = [...history]; const value = previous.pop() ?? null; setHistory(previous); setCursor(value); }}><ChevronLeft size={16} />上一页</Button><span>每页 50 封</span><Button variant="quiet" disabled={!nextCursor} onClick={() => { setHistory((values) => [...values, cursor]); setCursor(nextCursor); }} >下一页<ChevronRight size={16} /></Button></div>
+      <div className={styles.pagination}><Button variant="quiet" disabled={!history.length} onClick={() => { const previous = [...history]; const value = previous.pop() ?? null; setHistory(previous); setCursor(value); }}><ChevronLeft size={16} />上一页</Button><span>每页 {pageSize ?? 100} 封</span><Button variant="quiet" disabled={!nextCursor} onClick={() => { setHistory((values) => [...values, cursor]); setCursor(nextCursor); }} >下一页<ChevronRight size={16} /></Button></div>
     </div>
     <ResizeHandle value={listWidth} min={320} max={() => Math.max(320, (workspaceRef.current?.clientWidth ?? window.innerWidth) - 360)} label="调整邮件列表宽度" onChange={setListWidth} />
     <div className={`${styles.detailPane} ${selected ? styles.detailVisible : ""}`}>
@@ -615,25 +708,127 @@ function MessagesPage({ api, accounts, accountId, onAccountChange, revision, onL
   </section>;
 }
 
+function MessageMeta({ message, now }: { message: MessageSummary; now: number }) {
+  const metaRef = useRef<HTMLSpanElement | null>(null);
+  const signalsRef = useRef<HTMLSpanElement | null>(null);
+  const timeRef = useRef<HTMLTimeElement | null>(null);
+  const probeRef = useRef<HTMLSpanElement | null>(null);
+  const senderProbeRef = useRef<HTMLSpanElement | null>(null);
+  const [showForwardedVia, setShowForwardedVia] = useState(false);
+
+  useLayoutEffect(() => {
+    const meta = metaRef.current;
+    if (!meta || !message.forwardedVia || !message.labels.includes("forwarded")) {
+      setShowForwardedVia(false);
+      return;
+    }
+    const measure = () => {
+      const signals = signalsRef.current;
+      const time = timeRef.current;
+      const probe = probeRef.current;
+      const senderProbe = senderProbeRef.current;
+      if (!signals || !time || !probe || !senderProbe) return;
+      const labels = signals.querySelector<HTMLElement>(`:scope > .${styles.messageLabelsCompact}`);
+      const labelItems = labels ? [...labels.querySelectorAll<HTMLElement>(":scope > [data-label]")] : [];
+      const otherLabelsWidth = labelItems.filter((item) => item.dataset.label !== "forwarded")
+        .reduce((total, item) => total + item.offsetWidth, 0);
+      const labelGap = labelItems.length > 1 ? (labelItems.length - 1) * 5 : 0;
+      const outsideSignals = [...signals.children].filter((item) => item !== labels) as HTMLElement[];
+      const signalsWidth = otherLabelsWidth + probe.offsetWidth + labelGap
+        + outsideSignals.reduce((total, item) => total + item.getBoundingClientRect().width, 0)
+        + Math.max(0, outsideSignals.length) * 5;
+      const fullMetaWidth = signalsWidth + time.offsetWidth + 5;
+      setShowForwardedVia(canShowFullForwardedVia(meta.clientWidth, senderProbe.offsetWidth, fullMetaWidth));
+    };
+    measure();
+    if (typeof ResizeObserver === "undefined") {
+      window.addEventListener("resize", measure);
+      return () => window.removeEventListener("resize", measure);
+    }
+    const observer = new ResizeObserver(measure);
+    observer.observe(meta);
+    return () => observer.disconnect();
+  }, [message.forwardedVia, message.hasAttachments, message.folder, message.labels]);
+
+  return <span className={styles.messageMeta} ref={metaRef}>
+    <strong>{senderLabel(message)}</strong>
+    <span className={styles.messageMetaRight}>
+      <span className={styles.messageSignals} ref={signalsRef}>
+        {message.labels.length > 0 && <MessageLabels labels={message.labels} forwardedVia={message.forwardedVia} compact showForwardedVia={showForwardedVia} />}
+        {message.hasAttachments && <Paperclip size={14} aria-label="包含附件" />}
+        {message.folder === "junk" && <Archive size={14} aria-label="垃圾箱" />}
+      </span>
+      <time ref={timeRef} dateTime={message.displayTime} title={formatDate(message.displayTime)}>{formatRelativeDate(message.displayTime, now)}</time>
+    </span>
+    <span ref={senderProbeRef} className={styles.senderWidthProbe} data-sender={senderLabel(message)} aria-hidden="true" />
+    {message.forwardedVia && message.labels.includes("forwarded") && <span ref={probeRef} className={`badge badge-soft badge-xs ${styles.forwardedViaProbe}`} data-email={message.forwardedVia} aria-hidden="true"><Forward size={11} /></span>}
+  </span>;
+}
+
 export function MessageDetailView({ message, onBack, onMark }: { message: MessageDetail; onBack: () => void; onMark: (read: boolean) => void }) {
-  const addressList = (values: MessageDetail["to"]) => values.map((item) => item.name ? `${item.name} <${item.address}>` : item.address).join(", ") || "—";
   const [remoteImagesForMessage, setRemoteImagesForMessage] = useState<string | null>(null);
   const [pendingLink, setPendingLink] = useState<{ url: string; label: string } | null>(null);
   const [unsubscribePending, setUnsubscribePending] = useState(false);
   const [copyState, setCopyState] = useState<"copied" | "error" | null>(null);
+  const [addressCopyState, setAddressCopyState] = useState<{ target: string; address: string; status: "copied" | "error" } | null>(null);
+  const [metadataCollapsed, setMetadataCollapsed] = useState(false);
+  const lastBodyScrollTop = useRef(0);
+  const frameCleanupRef = useRef<(() => void) | null>(null);
+  const addressCopyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const addressCopyRequestRef = useRef(0);
+  const reducedMotion = useReducedMotion();
+  const metadataTransition = { duration: reducedMotion ? 0 : 0.14, ease: [0.23, 1, 0.32, 1] as const };
+  const bodyLayoutTransition = { layout: { duration: reducedMotion ? 0 : 0.18, ease: [0.23, 1, 0.32, 1] as const } };
   const hasRemoteImages = useMemo(() => hasRemoteImageReferences(message.html ?? ""), [message.html]);
   const remoteImagesLoaded = remoteImagesForMessage === message.id;
   const srcDoc = useMemo(() => message.html ? buildMessageSrcDoc(message.html, remoteImagesLoaded) : "", [message.html, remoteImagesLoaded]);
-  useEffect(() => { setPendingLink(null); setUnsubscribePending(false); setCopyState(null); }, [message.id]);
+  useEffect(() => {
+    setPendingLink(null);
+    setUnsubscribePending(false);
+    setCopyState(null);
+    setAddressCopyState(null);
+    addressCopyRequestRef.current += 1;
+    if (addressCopyTimerRef.current) clearTimeout(addressCopyTimerRef.current);
+    addressCopyTimerRef.current = null;
+    setMetadataCollapsed(false);
+    lastBodyScrollTop.current = 0;
+    return () => {
+      frameCleanupRef.current?.();
+      frameCleanupRef.current = null;
+      if (addressCopyTimerRef.current) clearTimeout(addressCopyTimerRef.current);
+    };
+  }, [message.id]);
+  const handleBodyScroll = useCallback((scrollTop: number) => {
+    const previousScrollTop = lastBodyScrollTop.current;
+    lastBodyScrollTop.current = scrollTop;
+    if (scrollTop <= 8) {
+      setMetadataCollapsed(false);
+    } else if (scrollTop > 24 && scrollTop > previousScrollTop) {
+      setMetadataCollapsed(true);
+    } else if (scrollTop < previousScrollTop) {
+      setMetadataCollapsed(false);
+    }
+  }, []);
   const handleFrameLoad = (frame: HTMLIFrameElement) => {
-    frame.contentDocument?.addEventListener("click", (event) => {
+    frameCleanupRef.current?.();
+    const document = frame.contentDocument;
+    if (!document) return;
+    const handleClick = (event: MouseEvent) => {
       const anchor = (event.target as Element | null)?.closest?.("a[data-safe-href]") as HTMLAnchorElement | null;
       if (!anchor) return;
       event.preventDefault();
       event.stopPropagation();
       const url = safeMessageLinkUrl(anchor.getAttribute("data-safe-href") ?? "");
       if (url) setPendingLink({ url, label: (anchor.textContent?.replace(/\s+/g, " ").trim() || url).slice(0, 160) });
-    });
+    };
+    const handleScroll = () => handleBodyScroll(document.scrollingElement?.scrollTop ?? document.documentElement.scrollTop ?? document.body.scrollTop);
+    document.addEventListener("click", handleClick);
+    document.addEventListener("scroll", handleScroll);
+    handleScroll();
+    frameCleanupRef.current = () => {
+      document.removeEventListener("click", handleClick);
+      document.removeEventListener("scroll", handleScroll);
+    };
   };
   const openPendingLink = () => {
     const url = pendingLink ? safeMessageLinkUrl(pendingLink.url) : null;
@@ -641,10 +836,43 @@ export function MessageDetailView({ message, onBack, onMark }: { message: Messag
     setPendingLink(null);
   };
   const copyVerificationCode = async () => {
+    addressCopyRequestRef.current += 1;
+    if (addressCopyTimerRef.current) clearTimeout(addressCopyTimerRef.current);
+    addressCopyTimerRef.current = null;
+    setAddressCopyState(null);
     if (!message.verificationCode || !navigator.clipboard) { setCopyState("error"); return; }
     try { await navigator.clipboard.writeText(message.verificationCode); setCopyState("copied"); }
     catch { setCopyState("error"); }
   };
+  const copyAddress = async (target: string, address: string) => {
+    const request = ++addressCopyRequestRef.current;
+    setCopyState(null);
+    if (addressCopyTimerRef.current) clearTimeout(addressCopyTimerRef.current);
+    addressCopyTimerRef.current = null;
+    setAddressCopyState(null);
+    const showFeedback = (status: "copied" | "error") => {
+      if (request !== addressCopyRequestRef.current) return;
+      setAddressCopyState({ target, address, status });
+      addressCopyTimerRef.current = setTimeout(() => {
+        setAddressCopyState((current) => current?.target === target && current.address === address ? null : current);
+        addressCopyTimerRef.current = null;
+      }, status === "copied" ? 1600 : 2600);
+    };
+    if (!navigator.clipboard?.writeText) { showFeedback("error"); return; }
+    try {
+      await navigator.clipboard.writeText(address);
+      showFeedback("copied");
+    } catch {
+      showFeedback("error");
+    }
+  };
+  const addressList = (values: MessageDetail["to"], group: "from" | "to" | "cc") => values.length > 0 ? values.map((item, index) => {
+    const target = `${group}-${index}`;
+    const status = addressCopyState?.target === target ? addressCopyState.status : null;
+    const title = status === "copied" ? `已复制 ${item.address}` : status === "error" ? `复制失败，点击重试 ${item.address}` : `点击复制 ${item.address}`;
+    const Icon = status === "copied" ? Check : status === "error" ? CircleAlert : Copy;
+    return <span className={styles.addressEntry} key={`${item.address}-${index}`}>{index > 0 && ", "}{item.name && <>{item.name} </>}<button type="button" className={styles.addressCopyButton} data-copy-state={status ?? undefined} aria-label={`复制邮箱地址 ${item.address}`} title={title} onClick={() => void copyAddress(target, item.address)}><span>{item.name ? `<${item.address}>` : item.address}</span><Icon size={12} aria-hidden="true" /></button></span>;
+  }) : "—";
   const openUnsubscribeLink = () => {
     if (unsubscribeUrl) window.open(unsubscribeUrl, "_blank", "noopener,noreferrer");
     setUnsubscribePending(false);
@@ -654,36 +882,41 @@ export function MessageDetailView({ message, onBack, onMark }: { message: Messag
   return <article className={styles.messageDetail}>
     <div className={styles.detailToolbar}>
       <IconButton label="返回邮件列表" className={`${styles.backButton} ${styles.detailIconAction}`} onClick={onBack}><ArrowLeft size={17} /></IconButton>
-      {(message.folder === "junk" || message.labels.length > 0) && <div className={styles.detailContext}>
+      {(message.folder === "junk" || message.labels.includes("forwarded")) && <div className={styles.detailContext}>
         {message.folder === "junk" && <span className={`badge badge-soft badge-sm ${styles.junkLabel}`}>垃圾箱</span>}
-        {message.labels.length > 0 && <MessageLabels labels={message.labels} toolbar />}
+        {message.labels.includes("forwarded") && <MessageLabels labels={["forwarded"]} forwardedVia={message.forwardedVia} toolbar showForwardedVia forwardedCopyState={addressCopyState?.target === "forwarded" ? addressCopyState.status : null} onCopyForwardedVia={(address) => void copyAddress("forwarded", address)} />}
       </div>}
       {(message.verificationCode || unsubscribeUrl) && <div className={styles.detailActions}>
         {message.verificationCode && <Button type="button" variant="quiet" className={styles.detailAction} aria-label={`复制 ${message.verificationCode}`} onClick={() => void copyVerificationCode()}><Copy size={14} /><span className={styles.detailActionText}>{copyState === "copied" ? "已复制" : copyState === "error" ? "复制失败" : `复制 ${message.verificationCode}`}</span></Button>}
-        {unsubscribeUrl && <Button type="button" variant="quiet" className={styles.detailAction} aria-label="快速退订" onClick={() => setUnsubscribePending(true)}><ExternalLink size={14} /><span className={styles.detailActionText}>快速退订</span></Button>}
+        {unsubscribeUrl && <Button type="button" variant="quiet" className={styles.detailAction} aria-label="退订" onClick={() => setUnsubscribePending(true)}><ExternalLink size={14} /><span className={styles.detailActionText}>退订</span></Button>}
       </div>}
       <span className={styles.toolbarSpacer} />
       <div className={styles.detailUtilities}>
         {hasRemoteImages && <Button type="button" variant="quiet" className={`${styles.detailAction} ${styles.remoteImageButton}`} aria-label={remoteImagesLoaded ? "图片已加载" : "加载图片"} disabled={remoteImagesLoaded} onClick={() => setRemoteImagesForMessage(message.id)}>{remoteImagesLoaded ? <Check size={14} /> : <ImageIcon size={14} />}<span className={styles.detailActionText}>{remoteImagesLoaded ? "已加载" : "加载图片"}</span></Button>}
-        <IconButton label={message.read ? "标记为未读" : "标记为已读"} className={styles.detailIconAction} onClick={() => onMark(!message.read)}>{message.read ? <Mail size={16} /> : <MailCheck size={16} />}</IconButton>
+        <IconButton label={message.read ? "标记为未读" : "标记为已读"} className={styles.detailIconAction} onClick={() => onMark(!message.read)}>{message.read ? <MailOpen size={16} /> : <Mail size={16} />}</IconButton>
       </div>
-      <span className={styles.srOnly} role="status" aria-live="polite">{copyState === "copied" ? "验证码已复制" : copyState === "error" ? "验证码复制失败" : ""}</span>
+      <span className={styles.srOnly} role="status" aria-live="polite">{addressCopyState ? `${addressCopyState.address} ${addressCopyState.status === "copied" ? "已复制" : "复制失败"}` : copyState === "copied" ? "验证码已复制" : copyState === "error" ? "验证码复制失败" : ""}</span>
     </div>
-    <header className={styles.detailHeader}><h2>{message.subject}</h2><time>{formatDate(message.displayTime)}</time><dl><div><dt>发件人</dt><dd>{addressList(message.from)}</dd></div><div><dt>收件人</dt><dd>{addressList(message.to)}</dd></div>{message.cc.length > 0 && <div><dt>抄送</dt><dd>{addressList(message.cc)}</dd></div>}{message.attachments.length > 0 && <div><dt>附件</dt><dd className={styles.attachments}>{message.attachments.map((name) => <span key={name}><Paperclip size={13} />{name}</span>)}</dd></div>}</dl></header>
-    <div className={styles.bodyDivider} />
-    {message.html ? <iframe title="邮件正文" sandbox="allow-same-origin" className={styles.mailBodyFrame} srcDoc={srcDoc} onLoad={(event) => handleFrameLoad(event.currentTarget)} /> : <pre className={styles.textBody}>{message.text || "（无正文）"}</pre>}
+    <header className={`${styles.detailHeader} ${metadataCollapsed ? styles.detailHeaderCollapsed : ""}`}><h2>{message.subject}</h2><motion.div className={`${styles.detailMetadata} ${metadataCollapsed ? styles.detailMetadataCollapsed : ""}`} aria-hidden={metadataCollapsed} initial={false} animate={{ opacity: metadataCollapsed ? 0 : 1, y: metadataCollapsed && !reducedMotion ? -4 : 0 }} transition={metadataTransition}><time>{formatDate(message.displayTime)}</time><dl><div><dt>发件人</dt><dd className={styles.addressList}>{addressList(message.from, "from")}</dd></div><div><dt>收件人</dt><dd className={styles.addressList}>{addressList(message.to, "to")}</dd></div>{message.cc.length > 0 && <div><dt>抄送</dt><dd className={styles.addressList}>{addressList(message.cc, "cc")}</dd></div>}{message.attachments.length > 0 && <div><dt>附件</dt><dd className={styles.attachments}>{message.attachments.map((name) => <span key={name}><Paperclip size={13} />{name}</span>)}</dd></div>}</dl></motion.div></header>
+    <motion.div layout="position" transition={bodyLayoutTransition} className={styles.bodyDivider} />
+    {message.html ? <motion.iframe layout="position" transition={bodyLayoutTransition} title="邮件正文" sandbox="allow-same-origin" className={styles.mailBodyFrame} srcDoc={srcDoc} onLoad={(event) => handleFrameLoad(event.currentTarget)} /> : <motion.pre layout="position" transition={bodyLayoutTransition} className={styles.textBody} onScroll={(event) => handleBodyScroll(event.currentTarget.scrollTop)}>{message.text || "（无正文）"}</motion.pre>}
+    <AnimatePresence>{addressCopyState && <motion.div className={styles.copyToast} aria-hidden="true" initial={reducedMotion ? { opacity: 0 } : { opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} exit={reducedMotion ? { opacity: 0 } : { opacity: 0, y: 4 }} transition={{ duration: reducedMotion ? 0 : 0.16, ease: [0.23, 1, 0.32, 1] }}><span className={addressCopyState.status === "copied" ? styles.copyToastSuccess : styles.copyToastError}>{addressCopyState.status === "copied" ? <Check size={14} /> : <CircleAlert size={14} />}{addressCopyState.status === "copied" ? "已复制" : "复制失败"}</span><span>{addressCopyState.address}</span></motion.div>}</AnimatePresence>
     <ConfirmDialog open={Boolean(pendingLink)} title={`确认打开“${pendingLink?.label ?? "此链接"}”？`} description={pendingLink?.url ?? ""} descriptionClassName={styles.linkConfirmUrl} confirmLabel="打开链接" onOpenChange={(open) => { if (!open) setPendingLink(null); }} onConfirm={openPendingLink} />
     <ConfirmDialog open={unsubscribePending} title={`确认前往 ${unsubscribeHost || "外部网站"} 退订？`} description={unsubscribeUrl ?? ""} descriptionClassName={styles.linkConfirmUrl} confirmLabel="打开退订链接" onOpenChange={setUnsubscribePending} onConfirm={openUnsubscribeLink} />
   </article>;
 }
 
-function MessageLabels({ labels, forwardedVia = null, compact = false, toolbar = false }: { labels: MessageLabel[]; forwardedVia?: string | null; compact?: boolean; toolbar?: boolean }) {
+function MessageLabels({ labels, forwardedVia = null, compact = false, toolbar = false, showForwardedVia = false, forwardedCopyState = null, onCopyForwardedVia }: { labels: MessageLabel[]; forwardedVia?: string | null; compact?: boolean; toolbar?: boolean; showForwardedVia?: boolean; forwardedCopyState?: "copied" | "error" | null; onCopyForwardedVia?: (address: string) => void }) {
   return <span className={`${styles.messageLabels} ${compact ? styles.messageLabelsCompact : ""} ${toolbar ? styles.toolbarLabels : ""}`}>{labels.map((label) => {
     const item = MESSAGE_LABELS[label];
     if (!item) return null;
-    const Icon = item.icon;
-    const showForwardedVia = compact && label === "forwarded" && forwardedVia;
-    return <span className={`badge badge-soft ${compact ? "badge-xs" : "badge-sm"} ${showForwardedVia ? styles.forwardedViaLabel : ""}`} key={label} data-label={label} {...(showForwardedVia ? { "aria-label": `经由邮箱 ${forwardedVia}`, title: `经由邮箱 ${forwardedVia}` } : {})}><Icon size={compact ? 11 : 13} />{showForwardedVia ? <><span className={styles.forwardedViaAddress}>{forwardedVia}</span><span className={styles.forwardedViaFallback} aria-hidden="true">转发</span></> : item.text}</span>;
+    const hasForwardedVia = Boolean(label === "forwarded" && forwardedVia);
+    const isCopyable = Boolean(hasForwardedVia && toolbar && onCopyForwardedVia);
+    const Icon = forwardedCopyState === "copied" && isCopyable ? Check : forwardedCopyState === "error" && isCopyable ? CircleAlert : item.icon;
+    const className = `badge badge-soft ${compact ? "badge-xs" : "badge-sm"} ${hasForwardedVia ? styles.forwardedViaLabel : ""} ${hasForwardedVia && showForwardedVia ? styles.forwardedViaLabelExpanded : ""} ${isCopyable ? styles.copyableForwardedVia : ""}`;
+    const content = <><Icon size={compact ? 11 : 13} />{hasForwardedVia && showForwardedVia ? <span className={styles.forwardedViaAddress}>{forwardedVia}</span> : item.text}</>;
+    if (isCopyable && forwardedVia) return <button type="button" className={className} key={label} data-label={label} data-copy-state={forwardedCopyState ?? undefined} aria-label={`复制经由邮箱 ${forwardedVia}`} title={forwardedCopyState === "copied" ? `已复制 ${forwardedVia}` : forwardedCopyState === "error" ? `复制失败，点击重试 ${forwardedVia}` : `点击复制 ${forwardedVia}`} onClick={() => onCopyForwardedVia?.(forwardedVia)}>{content}</button>;
+    return <span className={className} key={label} data-label={label} {...(hasForwardedVia ? { "aria-label": `经由邮箱 ${forwardedVia}`, title: `经由邮箱 ${forwardedVia}` } : {})}>{content}</span>;
   })}</span>;
 }
 
@@ -747,12 +980,12 @@ export function buildMessageSrcDoc(html: string, loadRemoteImages = false): stri
 }
 
 function SettingsPage({ api, onNotice }: { api: ApiClient; onNotice: (notice: { kind: "success" | "error"; text: string }) => void }) {
-  const [settings, setSettings] = useState<Settings | null>(null); const [value, setValue] = useState("100"); const [interval, setIntervalValue] = useState("10"); const [busy, setBusy] = useState(false);
-  useEffect(() => { api.request<Settings>("/settings").then((result) => { setSettings(result); setValue(String(result.maxMessagesPerAccount)); setIntervalValue(String(result.pollIntervalSeconds)); }).catch((error) => onNotice({ kind: "error", text: error.message })); }, [api, onNotice]);
-  const save = async (event: FormEvent) => { event.preventDefault(); setBusy(true); try { const result = await api.request<Settings>("/settings", { method: "PATCH", body: JSON.stringify({ maxMessagesPerAccount: Number(value), pollIntervalSeconds: Number(interval) }) }); setSettings(result); onNotice({ kind: "success", text: "系统设置已保存" }); } catch (error) { onNotice({ kind: "error", text: error instanceof Error ? error.message : "保存失败" }); } finally { setBusy(false); } };
+  const [settings, setSettings] = useState<Settings | null>(null); const [value, setValue] = useState("100"); const [interval, setIntervalValue] = useState("10"); const [pageSize, setPageSize] = useState("100"); const [busy, setBusy] = useState(false);
+  useEffect(() => { api.request<Settings>("/settings").then((result) => { setSettings(result); setValue(String(result.maxMessagesPerAccount)); setIntervalValue(String(result.pollIntervalSeconds)); setPageSize(String(result.pageSize ?? 100)); }).catch((error) => onNotice({ kind: "error", text: error.message })); }, [api, onNotice]);
+  const save = async (event: FormEvent) => { event.preventDefault(); setBusy(true); try { const result = await api.request<Settings>("/settings", { method: "PATCH", body: JSON.stringify({ maxMessagesPerAccount: Number(value), pollIntervalSeconds: Number(interval), pageSize: Number(pageSize) }) }); setSettings(result); onNotice({ kind: "success", text: "系统设置已保存" }); } catch (error) { onNotice({ kind: "error", text: error instanceof Error ? error.message : "保存失败" }); } finally { setBusy(false); } };
   if (!settings) return <div className={styles.centerState}><Spinner /></div>;
-  const unchanged = Number(value) === settings.maxMessagesPerAccount && Number(interval) === settings.pollIntervalSeconds;
-  return <section className={styles.settingsSection}><div className={styles.sectionToolbar}><div><h2>同步与缓存</h2><p>全局邮件策略</p></div></div><form className={styles.settingsForm} onSubmit={save}><div className={`fieldset ${styles.settingsField}`}><label className="fieldset-legend" htmlFor="max-messages">每个账号最多保留</label><div className={styles.numberControl}><input className="input input-sm" id="max-messages" type="number" min="1" max="10000" value={value} onChange={(event) => setValue(event.target.value)} /><span>封邮件</span></div><p>收件箱和垃圾箱合计计算，超出后删除最旧的本地缓存。</p></div><div className={`fieldset ${styles.settingsField}`}><label className="fieldset-legend" htmlFor="poll-interval">无 IDLE 时轮询间隔</label><div className={styles.numberControl}><input className="input input-sm" id="poll-interval" type="number" min="5" max="3600" value={interval} onChange={(event) => setIntervalValue(event.target.value)} /><span>秒</span></div><p>支持 IDLE 的邮箱保持实时长连接，此设置只用于不支持 IDLE 的服务器。</p></div><Button variant="primary" disabled={busy || unchanged}>{busy ? <Spinner label="正在保存" /> : "保存设置"}</Button></form></section>;
+  const unchanged = Number(value) === settings.maxMessagesPerAccount && Number(interval) === settings.pollIntervalSeconds && Number(pageSize) === settings.pageSize;
+  return <section className={styles.settingsSection}><div className={styles.sectionToolbar}><div><h2>同步与缓存</h2><p>全局邮件策略</p></div></div><form className={styles.settingsForm} onSubmit={save}><div className={`fieldset ${styles.settingsField}`}><label className="fieldset-legend" htmlFor="max-messages">每个账号最多保留</label><div className={styles.numberControl}><input className="input input-sm" id="max-messages" type="number" min="1" max="10000" value={value} onChange={(event) => setValue(event.target.value)} /><span>封邮件</span></div><p>收件箱和垃圾箱合计计算，超出后删除最旧的本地缓存。</p></div><div className={`fieldset ${styles.settingsField}`}><label className="fieldset-legend" htmlFor="page-size">邮件列表每页显示</label><div className={styles.numberControl}><input className="input input-sm" id="page-size" type="number" min="10" max="100" value={pageSize} onChange={(event) => setPageSize(event.target.value)} /><span>封邮件</span></div><p>控制邮件列表单页加载数量，范围为 10–100 封。</p></div><div className={`fieldset ${styles.settingsField}`}><label className="fieldset-legend" htmlFor="poll-interval">无 IDLE 时轮询间隔</label><div className={styles.numberControl}><input className="input input-sm" id="poll-interval" type="number" min="5" max="3600" value={interval} onChange={(event) => setIntervalValue(event.target.value)} /><span>秒</span></div><p>支持 IDLE 的邮箱保持实时长连接，此设置只用于不支持 IDLE 的服务器。</p></div><Button variant="primary" disabled={busy || unchanged}>{busy ? <Spinner label="正在保存" /> : "保存设置"}</Button></form></section>;
 }
 
 function ConfirmDialog({ open, title, description, descriptionClassName, confirmLabel, danger = false, onOpenChange, onConfirm }: { open: boolean; title: string; description: string; descriptionClassName?: string; confirmLabel: string; danger?: boolean; onOpenChange: (open: boolean) => void; onConfirm: () => void }) {

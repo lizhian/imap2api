@@ -128,15 +128,15 @@ describe("mail HTML sanitization", () => {
     });
     await synchronizer.syncFolder(client as unknown as ImapFlow, account, "inbox", "INBOX", 100);
     expect(requestedParts).toEqual([]);
-    expect(db.getKnownMessage(account.id, "inbox", "1", 1)?.classificationVersion).toBe(2);
+    expect(db.getKnownMessage(account.id, "INBOX", "1", 1)?.classificationVersion).toBe(3);
 
     const legacyContent = { subject: "Legacy", from: [], to: [], cc: [], preview: "legacy", text: "legacy", html: "<p>legacy</p>", attachments: [] };
     db.upsertMessage({ id: summary.id, accountId: account.id, folder: "inbox", mailboxPath: "INBOX", uid: 1, uidValidity: "1", read: false, displayTime: "2026-01-01T00:00:00.000Z", content: legacyContent });
-    expect(db.getKnownMessage(account.id, "inbox", "1", 1)?.htmlPolicyVersion).toBe(0);
+    expect(db.getKnownMessage(account.id, "INBOX", "1", 1)?.htmlPolicyVersion).toBe(0);
     await synchronizer.syncFolder(client as unknown as ImapFlow, account, "inbox", "INBOX", 100);
     expect(requestedParts).toEqual(["1", "2"]);
     expect(updatedIds.at(-1)).toEqual([summary.id]);
-    expect(db.getKnownMessage(account.id, "inbox", "1", 1)?.htmlPolicyVersion).toBe(2);
+    expect(db.getKnownMessage(account.id, "INBOX", "1", 1)?.htmlPolicyVersion).toBe(2);
 
     db.upsertMessage({ id: summary.id, accountId: account.id, folder: "inbox", mailboxPath: "INBOX", uid: 1, uidValidity: "1", read: false, displayTime: "2026-01-01T00:00:00.000Z", content: { ...legacyContent, html: "<p>preserved</p>" } });
     failBodyFetch = true;
@@ -145,13 +145,13 @@ describe("mail HTML sanitization", () => {
     db.close();
   });
 
-  it("identifies forwarding from metadata headers without fetching a body", async () => {
+  it("backfills a version 2 forwarding result from metadata headers without fetching a body", async () => {
     const dir = mkdtempSync(join(tmpdir(), "imap2api-mail-forwarding-"));
     dirs.push(dir);
     const db = new AppDatabase(join(dir, "test.db"), "t".repeat(32));
     const publicAccount = db.createAccount({
-      email: "inbox@domain-c.test", password: "authorization-code",
-      imap: { provider: "custom", host: "imap.domain-c.test", port: 993, secure: true }
+      email: "503457938@qq.com", password: "authorization-code",
+      imap: { provider: "custom", host: "imap.qq.com", port: 993, secure: true }
     });
     const account = db.getAccount(publicAccount.id)!;
     let bodyFetches = 0;
@@ -160,12 +160,17 @@ describe("mail HTML sanitization", () => {
       getMailboxLock: async () => ({ release: () => undefined }),
       fetchAll: async () => [{
         uid: 1, flags: new Set<string>(),
-        envelope: { subject: "Header only", to: [{ address: "source@domain-a.test" }], date: new Date("2026-01-01T00:00:00Z") },
+        envelope: {
+          subject: "Header only", to: [{ address: "commandcode-proxy@noreply.github.com" }],
+          cc: [{ address: "lizhiangg@gmail.com" }, { address: "author@noreply.github.com" }],
+          date: new Date("2026-01-01T00:00:00Z")
+        },
         headers: Buffer.from([
-          "Delivered-To: inbox@domain-c.test",
-          "Delivered-To: relay@domain-b.test",
-          "Delivered-To: source@domain-a.test",
-          "To: source@domain-a.test",
+          "X-Forwarded-To: 503457938@qq.com",
+          "X-Forwarded-For: lizhiangg@gmail.com 503457938@qq.com",
+          "Delivered-To: lizhiangg@gmail.com",
+          "To: commandcode-proxy@noreply.github.com",
+          "Cc: lizhiangg@gmail.com, author@noreply.github.com",
           ""
         ].join("\r\n")),
         internalDate: new Date("2026-01-01T00:00:00Z"), bodyStructure: undefined
@@ -179,7 +184,29 @@ describe("mail HTML sanitization", () => {
 
     const message = db.listMessages({ accountId: account.id, view: "all", limit: 50 }).items[0]!;
     expect(bodyFetches).toBe(0);
-    expect(message).toMatchObject({ labels: ["forwarded"], forwardedVia: "relay@domain-b.test" });
+    expect(message).toMatchObject({ labels: ["forwarded"], forwardedVia: "lizhiangg@gmail.com" });
+
+    const detail = db.getMessage(message.id)!;
+    db.upsertMessage({
+      id: message.id, accountId: account.id, folder: "inbox", mailboxPath: "INBOX", uid: 1, uidValidity: "1",
+      read: false, displayTime: "2026-01-01T00:00:00.000Z",
+      content: {
+        htmlPolicyVersion: detail.htmlPolicyVersion, classificationVersion: 2,
+        subject: detail.subject, from: detail.from, to: detail.to, cc: detail.cc, preview: detail.preview,
+        text: detail.text, html: detail.html, attachments: detail.attachments, labels: ["forwarded"],
+        verificationCode: detail.verificationCode, unsubscribeUrl: detail.unsubscribeUrl,
+        forwardedVia: null, forwardedViaSource: null
+      }
+    });
+
+    await new MailboxSynchronizer(db, new EventBroker()).syncFolder(
+      client as unknown as ImapFlow, account, "inbox", "INBOX", 100
+    );
+
+    expect(bodyFetches).toBe(0);
+    expect(db.getKnownMessage(account.id, "INBOX", "1", 1)?.classificationVersion).toBe(3);
+    expect(db.listMessages({ accountId: account.id, view: "all", limit: 50 }).items[0]?.forwardedVia)
+      .toBe("lizhiangg@gmail.com");
     db.close();
   });
 });

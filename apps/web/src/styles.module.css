@@ -104,7 +104,7 @@
 
 .accountList { display: grid; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; background: var(--surface); }
 .accountList > .accountRow::after { content: none; }
-.accountRow { position: relative; height: 78px; min-height: 78px; display: grid; grid-template-columns: 28px minmax(0, 1fr) auto; align-items: center; gap: 10px; padding: 9px 12px; border: 0; border-radius: 0; }
+.accountRow { position: relative; min-height: 88px; display: grid; grid-template-columns: 28px minmax(280px, 1.15fr) minmax(360px, 1fr) auto; align-items: center; gap: 14px; padding: 10px 12px; border: 0; border-radius: 0; }
 .accountRow:not(:last-child) { border-bottom: 1px solid var(--border-soft); }
 .accountRow:hover { background: var(--surface-raised); }
 .accountRowDragging { opacity: .45; }
@@ -112,18 +112,22 @@
 .dragHandle { width: 28px; display: inline-flex; color: var(--text-tertiary); cursor: grab; }
 .dragHandle > button { cursor: inherit; }
 .dragHandle:active { cursor: grabbing; }
-.accountOverview { min-width: 0; display: grid; grid-template-columns: minmax(260px, .72fr) minmax(420px, 1.28fr); align-items: center; gap: 20px; }
+.accountOverview { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) 112px; align-items: center; gap: 16px; }
 .accountIdentity { min-width: 0; display: flex; align-items: center; gap: 12px; }
 .mailAvatar { width: 34px; height: 34px; display: grid; place-items: center; flex: none; border-radius: 7px; background: var(--color-base-200); color: var(--text-secondary); }
 .accountIdentity > div { min-width: 0; display: grid; gap: 4px; }
-.accountIdentity strong, .accountIdentity span, .accountMetric strong, .accountTime time, .accountTime small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.accountIdentity strong, .accountIdentity span, .accountConnection span, .accountStats dd, .accountStats time { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .accountIdentity strong { font-size: 14px; font-weight: 600; }
 .accountIdentity span { color: var(--text-secondary); font-size: 12px; }
-.accountHealth { min-width: 0; display: grid; grid-template-columns: 112px minmax(120px, .75fr) minmax(150px, 1fr); align-items: center; gap: 18px; }
-.accountConnection, .accountMetric, .accountTime { min-width: 0; display: grid; align-content: center; justify-items: start; gap: 3px; }
-.accountConnection > small, .accountMetric > span, .accountTime > span { color: var(--text-tertiary); font-size: 11px; }
-.accountMetric strong, .accountTime time { font-size: 13px; font-weight: 550; }
-.accountTime small { max-width: 100%; color: var(--danger); font-size: 12px; }
+.accountConnection { min-width: 0; display: grid; align-content: center; justify-items: start; gap: 3px; }
+.accountConnection > small { color: var(--text-tertiary); font-size: 11px; }
+.accountError { max-width: 100%; color: var(--danger); font-size: 11px; }
+.accountStats { min-width: 0; display: grid; grid-template-columns: repeat(4, minmax(66px, 1fr)); gap: 12px; margin: 0; }
+.accountStats > div { min-width: 0; display: grid; gap: 4px; }
+.accountStats dt { overflow: hidden; color: var(--text-tertiary); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.accountStats dd { min-width: 0; margin: 0; color: var(--text); font-size: 14px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.accountStats dd small { margin-left: 3px; color: var(--text-secondary); font-size: 11px; font-weight: 500; }
+.accountStats time { display: block; font-size: 13px; font-weight: 550; }
 .status { width: fit-content; display: inline-flex; align-items: center; gap: 6px; padding: 4px 8px; border-radius: 999px; font-size: 12px; font-weight: 550; white-space: nowrap; }
 .status_pending { color: var(--text-secondary); }
 .status_connecting { color: var(--signal); }
@@ -143,6 +147,26 @@
 .dialog, .confirmDialog { position: fixed; z-index: 90; top: 50%; left: 50%; width: min(calc(100vw - 32px), 500px); max-height: calc(100vh - 40px); overflow: auto; transform: translate(-50%, -50%); border: 1px solid var(--border); border-radius: 8px; background: var(--surface); box-shadow: var(--shadow-float); animation: dialogIn var(--normal) var(--ease); }
 @keyframes dialogIn { from { opacity: 0; transform: translate(-50%, calc(-50% + 8px)) scale(.99); } }
 .dialog { width: min(calc(100vw - 32px), 640px); padding: 20px; }
+.folderDialog { overflow: hidden; }
+.folderSummary { height: 32px; display: flex; align-items: center; justify-content: flex-end; gap: 14px; padding: 0 2px; color: var(--text-tertiary); font-size: 12px; }
+.folderList { max-height: min(52vh, 480px); overflow: auto; border: 1px solid var(--border); border-radius: 7px; background: var(--surface); }
+.folderRow { min-height: 54px; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 12px; padding: 7px 9px 7px calc(10px + var(--folder-indent, 0px)); }
+.folderRow:not(:last-child) { border-bottom: 1px solid var(--border-soft); }
+.folderChoice { min-width: 0; display: grid; grid-template-columns: 20px 18px minmax(0, 1fr); align-items: center; gap: 8px; cursor: pointer; }
+.folderChoice:has(input:disabled) { cursor: default; }
+.folderChoice > svg { color: var(--text-tertiary); }
+.folderChoice > span { min-width: 0; display: grid; gap: 2px; }
+.folderChoice strong, .folderChoice small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.folderChoice strong { color: var(--text); font-size: 13px; font-weight: 580; }
+.folderChoice small { color: var(--text-tertiary); font-size: 11px; }
+.folderMode { flex: none; overflow: hidden; border: 1px solid var(--border); border-radius: 6px; }
+.folderMode > button { min-height: 28px; height: 28px; border: 0; border-left: 1px solid var(--border); border-radius: 0; background: var(--surface); color: var(--text-secondary); font-size: 12px; font-weight: 520; }
+.folderMode > button:first-child { border-left: 0; }
+.folderMode > .folderModeActive { background: var(--accent); color: var(--color-primary-content); }
+.folderFixed { color: var(--text-tertiary); font-size: 12px; white-space: nowrap; }
+.folderMissing { background: color-mix(in oklab, var(--warning) 5%, var(--surface)); }
+.folderMissing .folderChoice > svg, .folderMissing .folderChoice small { color: var(--warning); }
+.folderState { min-height: 180px; display: grid; place-items: center; align-content: center; gap: 12px; color: var(--text-secondary); font-size: 13px; }
 .confirmDialog { width: min(calc(100vw - 32px), 420px); padding: 22px; }
 .dialogHeader { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 20px; }
 .dialogHeader h2, .confirmDialog h2 { margin: 0; font-size: 20px; font-weight: 620; }
@@ -203,24 +227,28 @@
 .messageRead .unreadDot { opacity: 0; }
 .unreadDot { width: 7px; height: 7px; margin-top: 6px; border-radius: 50%; background: var(--accent); }
 .messageMain { min-width: 0; display: grid; align-content: start; gap: 4px; }
-.messageMeta { min-width: 0; display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.messageMeta { position: relative; min-width: 0; display: flex; justify-content: space-between; align-items: center; gap: 8px; }
 .messageMeta strong, .messageSubject, .messagePreview { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.messageMeta strong { min-width: 0; font-size: 13px; font-weight: 650; }
+.messageMeta strong { min-width: 0; flex: 1 1 auto; font-size: 13px; font-weight: 650; }
 .messageMetaRight, .messageSignals { min-width: 0; display: flex; align-items: center; gap: 5px; }
-.messageMetaRight { flex: none; }
-.messageSignals { max-width: 190px; overflow: hidden; color: var(--text-tertiary); }
+.messageMetaRight { max-width: calc(100% - 72px); flex: 0 1 auto; overflow: hidden; }
+.messageSignals { max-width: 100%; flex: 0 1 auto; overflow: hidden; color: var(--text-tertiary); }
 .messageMeta time { flex: none; color: var(--text-tertiary); font-size: 11px; }
 .messageSubject { font-size: 13px; font-weight: 600; }
 .messagePreview { color: var(--text-secondary); font-size: 12px; }
 .messageLabels { min-width: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 5px; }
-.messageLabels > span { display: inline-flex; align-items: center; gap: 4px; color: var(--text-secondary); white-space: nowrap; }
-.messageLabels > span[data-label="verification_code"] { color: var(--signal); }
-.messageLabels > span[data-label="unsubscribe"] { color: var(--warning); }
-.messageLabelsCompact { height: 18px; flex-wrap: nowrap; overflow: hidden; }
-.messageLabelsCompact > span { height: 18px; padding: 0 5px; font-size: 11px; }
-.forwardedViaLabel { min-width: 0; max-width: min(144px, 28cqi); }
-.forwardedViaAddress { display: none; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-.forwardedViaFallback { display: inline; }
+.messageLabels > :is(span, button) { display: inline-flex; align-items: center; gap: 4px; color: var(--text-secondary); white-space: nowrap; }
+.messageLabels > :is(span, button)[data-label="verification_code"] { color: var(--signal); }
+.messageLabels > :is(span, button)[data-label="unsubscribe"] { color: var(--warning); }
+.messageLabelsCompact { height: 18px; flex: 0 1 auto; flex-wrap: nowrap; overflow: hidden; }
+.messageLabelsCompact > :is(span, button) { height: 18px; padding: 0 5px; font-size: 11px; }
+.forwardedViaLabel { min-width: max-content; flex: none; }
+.forwardedViaLabelExpanded { max-width: none; }
+.forwardedViaAddress { display: inline; white-space: nowrap; }
+.forwardedViaProbe { position: absolute; width: max-content; height: 18px; display: inline-flex; align-items: center; gap: 4px; padding: 0 5px; visibility: hidden; pointer-events: none; font-size: 11px; white-space: nowrap; }
+.forwardedViaProbe::after { content: attr(data-email); }
+.senderWidthProbe { position: absolute; width: max-content; visibility: hidden; pointer-events: none; font-size: 13px; font-weight: 650; white-space: nowrap; }
+.senderWidthProbe::after { content: attr(data-sender); }
 .pagination { min-height: 46px; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 5px 8px; border-top: 1px solid var(--border-soft); background: var(--surface-raised); }
 .pagination span { color: var(--text-tertiary); font-size: 11px; }
 
@@ -228,35 +256,51 @@
   .secondaryFilterGroup { display: none; }
   .filterDropdown { display: inline-block; }
 }
-@container (min-width: 521px) {
-  .forwardedViaAddress { display: inline; }
-  .forwardedViaFallback { display: none; }
-}
 .detailPane { min-width: 0; min-height: 0; overflow: hidden; }
 .detailPane > .emptyState { height: 100%; }
-.messageDetail { height: 100%; min-height: 0; display: grid; grid-template-rows: auto auto auto minmax(0, 1fr); overflow: hidden; }
+.messageDetail { position: relative; height: 100%; min-height: 0; display: grid; grid-template-rows: auto auto auto minmax(0, 1fr); overflow: hidden; }
 .detailToolbar { grid-row: 1; display: flex; align-items: center; gap: 10px; padding: 7px 10px; overflow-x: auto; }
 .detailContext, .detailActions, .detailUtilities { min-width: 0; display: flex; align-items: center; flex: none; }
 .detailContext { gap: 5px; }
 .detailActions, .detailUtilities { gap: 3px; }
 .detailToolbar .messageLabels, .detailToolbar .button { flex: none; }
 .toolbarLabels { flex-wrap: nowrap; }
-.toolbarLabels > span, .junkLabel { height: 24px; min-height: 24px; padding: 0 7px; border: 1px solid transparent; border-radius: 5px; background: var(--color-base-200); color: var(--text-secondary); font-size: 12px; font-weight: 520; }
-.toolbarLabels > span[data-label="verification_code"] { background: color-mix(in oklab, var(--color-secondary) 8%, var(--color-base-100)); color: var(--signal); }
-.toolbarLabels > span[data-label="unsubscribe"], .junkLabel { background: color-mix(in oklab, var(--color-warning) 10%, var(--color-base-100)); color: color-mix(in oklab, var(--color-warning) 58%, var(--color-base-content)); }
+.toolbarLabels > :is(span, button), .junkLabel { height: 24px; min-height: 24px; padding: 0 7px; border: 1px solid transparent; border-radius: 5px; background: var(--color-base-200); color: var(--text-secondary); font-size: 12px; font-weight: 520; }
+.toolbarLabels > :is(span, button)[data-label="verification_code"] { background: color-mix(in oklab, var(--color-secondary) 8%, var(--color-base-100)); color: var(--signal); }
+.toolbarLabels > :is(span, button)[data-label="unsubscribe"], .junkLabel { background: color-mix(in oklab, var(--color-warning) 10%, var(--color-base-100)); color: color-mix(in oklab, var(--color-warning) 58%, var(--color-base-content)); }
+.copyableForwardedVia { appearance: none; font: inherit; cursor: copy; transition: background-color var(--fast) var(--ease), color var(--fast) var(--ease), box-shadow var(--fast) var(--ease); }
+.copyableForwardedVia:hover { background: var(--color-base-300); color: var(--text); }
+.copyableForwardedVia:focus-visible, .addressCopyButton:focus-visible { outline: 2px solid var(--signal); outline-offset: 2px; }
+.copyableForwardedVia[data-copy-state="copied"], .addressCopyButton[data-copy-state="copied"] { color: var(--success); }
+.copyableForwardedVia[data-copy-state="error"], .addressCopyButton[data-copy-state="error"] { color: var(--danger); }
 .detailAction { min-height: 30px; height: 30px; padding: 0 8px; border-radius: 5px; color: var(--text-secondary); font-size: 12px; font-weight: 550; }
 .detailAction:hover:not(:disabled), .detailIconAction:hover:not(:disabled) { background: var(--color-base-200); color: var(--text); }
 .detailIconAction { width: 30px; height: 30px; border-radius: 5px; color: var(--text-secondary); }
 .toolbarSpacer { min-width: 4px; flex: 1 0 4px; }
 .remoteImageButton { min-width: 86px; }
 .backButton { display: none; }
-.detailHeader { grid-row: 2; padding: 16px 18px 12px; }
-.detailHeader h2 { margin: 0 0 8px; font-size: 20px; line-height: 1.3; font-weight: 620; overflow-wrap: anywhere; }
-.detailHeader > time { color: var(--text-tertiary); font-size: 12px; }
-.detailHeader dl { display: grid; gap: 4px; margin: 12px 0 0; }
+.detailHeader { position: relative; z-index: 1; grid-row: 2; padding: 16px 18px 12px; background: var(--surface); }
+.detailHeader h2 { margin: 0; font-size: 20px; line-height: 1.3; font-weight: 620; overflow-wrap: anywhere; }
+.detailHeaderCollapsed { padding-bottom: 8px; }
+.detailMetadata { margin-top: 8px; }
+.detailMetadataCollapsed { position: absolute; right: 18px; left: 18px; pointer-events: none; }
+.detailMetadata > time { color: var(--text-tertiary); font-size: 12px; }
+.detailMetadata dl { display: grid; gap: 4px; margin: 12px 0 0; }
 .detailHeader dl div { display: grid; grid-template-columns: 54px minmax(0, 1fr); gap: 8px; font-size: 12px; line-height: 1.55; }
 .detailHeader dt { color: var(--text-tertiary); }
 .detailHeader dd { min-width: 0; margin: 0; color: var(--text-secondary); overflow-wrap: anywhere; }
+.addressList { line-height: 1.75; }
+.addressEntry { display: inline; }
+.addressCopyButton { min-width: 0; display: inline-flex; align-items: center; gap: 4px; margin: 0; padding: 1px 4px; border: 0; border-radius: 4px; background: transparent; color: inherit; font: inherit; line-height: inherit; vertical-align: baseline; cursor: copy; transition: background-color var(--fast) var(--ease), color var(--fast) var(--ease); }
+.addressCopyButton > span { min-width: 0; overflow-wrap: anywhere; }
+.addressCopyButton > svg { flex: none; opacity: .38; transition: opacity var(--fast) var(--ease); }
+.addressCopyButton:hover { background: var(--color-base-200); color: var(--text); }
+.addressCopyButton:hover > svg, .addressCopyButton:focus-visible > svg, .addressCopyButton[data-copy-state] > svg { opacity: 1; }
+.copyToast { position: absolute; z-index: 20; right: 18px; bottom: 18px; max-width: min(420px, calc(100% - 36px)); min-height: 34px; display: flex; align-items: center; gap: 9px; padding: 6px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); box-shadow: 0 8px 24px color-mix(in oklab, var(--color-neutral) 10%, transparent); color: var(--text-secondary); font-size: 12px; pointer-events: none; }
+.copyToast > span:last-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.copyToastSuccess, .copyToastError { display: inline-flex; align-items: center; gap: 5px; flex: none; font-weight: 600; }
+.copyToastSuccess { color: var(--success); }
+.copyToastError { color: var(--danger); }
 .attachments { display: flex; flex-wrap: wrap; gap: 6px; }
 .attachments span { display: inline-flex; align-items: center; gap: 4px; padding: 3px 7px; border-radius: 999px; background: var(--color-base-200); color: var(--text); }
 .bodyDivider { grid-row: 3; height: 1px; margin: 0 18px; background: var(--border-soft); }
@@ -283,9 +327,10 @@
 }
 
 @media (max-width: 1100px) {
-  .accountRow { height: 128px; min-height: 128px; }
-  .accountOverview { grid-template-columns: minmax(0, 1fr); gap: 7px; }
-  .accountHealth { width: 100%; }
+  .accountRow { min-height: 124px; grid-template-columns: 28px minmax(0, 1fr) auto; grid-template-rows: auto auto; gap: 8px 12px; }
+  .accountOverview { grid-column: 2; grid-row: 1; }
+  .accountStats { grid-column: 2; grid-row: 2; width: 100%; }
+  .rowActions { grid-column: 3; grid-row: 1 / span 2; }
 }
 
 @media (max-width: 900px) {
@@ -304,14 +349,15 @@
   .mobileNav .navButton { min-height: 50px; display: grid; place-items: center; align-content: center; gap: 2px; padding: 0; font-size: 10px; }
   .mobileNav .navButton svg { width: 19px; }
   .sectionToolbar { align-items: center; }
-  .accountRow { height: 200px; min-height: 200px; grid-template-columns: 44px minmax(0, 1fr); grid-template-rows: auto 44px; gap: 8px; padding: 12px; }
+  .accountRow { min-height: 0; grid-template-columns: 44px minmax(0, 1fr); grid-template-rows: auto auto 44px; gap: 10px 8px; padding: 12px; }
   .accountRow > .dragHandle { grid-column: 1; grid-row: 1; align-self: start; margin-top: 3px; }
   .dragHandle, .dragHandle .iconButton { width: 44px; height: 44px; }
   .accountOverview { grid-column: 2; grid-row: 1; }
-  .accountHealth { width: 100%; grid-template-columns: 112px minmax(0, 1fr); gap: 7px 12px; }
-  .accountTime { grid-column: 1 / -1; grid-template-columns: max-content minmax(0, 1fr); align-items: baseline; gap: 8px; }
-  .accountTime small { display: none; }
-  .rowActions { grid-column: 2; grid-row: 2; justify-self: end; }
+  .accountOverview { grid-template-columns: minmax(0, 1fr); gap: 8px; }
+  .accountConnection { display: flex; align-items: center; gap: 8px; }
+  .accountError { display: none; }
+  .accountStats { grid-column: 1 / -1; grid-row: 2; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 16px; padding-left: 52px; }
+  .rowActions { grid-column: 1 / -1; grid-row: 3; justify-self: end; }
   .rowActions .iconButton { width: 40px; height: 40px; }
   .mailWorkspace { height: 100%; min-height: 420px; display: block; }
   .mailWorkspace > .resizeHandle { display: none; }
@@ -337,9 +383,17 @@
   .aliasInput { grid-template-columns: minmax(0, 1fr) 44px; }
   .aliasInput .iconButton { width: 44px; height: 44px; }
   .aliasList button { width: 36px; height: 36px; }
+  .folderDialog { width: calc(100vw - 16px); max-height: calc(100dvh - 24px); padding: 14px; }
+  .folderList { max-height: 58vh; }
+  .folderRow { min-height: 72px; grid-template-columns: minmax(0, 1fr); gap: 5px; padding-top: 8px; padding-bottom: 8px; }
+  .folderMode, .folderFixed { justify-self: end; }
+  .folderMode > button { min-height: 32px; height: 32px; }
   .detailToolbar > .iconButton:last-child { width: 44px; height: 44px; }
   .detailHeader { padding: 18px 16px 14px; }
+  .detailHeaderCollapsed { padding-bottom: 8px; }
+  .detailMetadataCollapsed { right: 16px; left: 16px; }
   .detailHeader h2 { font-size: 18px; }
+  .copyToast { right: 12px; bottom: 12px; max-width: calc(100% - 24px); }
   .bodyDivider { margin: 0 16px; }
   .textBody { padding: 18px 16px 30px; }
   .settingsField { grid-template-columns: 112px minmax(0, 1fr); gap: 4px 12px; }
