@@ -75,14 +75,46 @@ describe("AppDatabase", () => {
 
     const first = db.listMessages({ view: "unread", filter: ["verification_code", "attachment"], limit: 1 });
     expect(first.items.map((message) => message.subject)).toEqual(["message-4"]);
+    expect(first.total).toBe(2);
     expect(first.nextCursor).not.toBeNull();
     const second = db.listMessages({ view: "unread", filter: ["verification_code", "attachment"], cursor: first.nextCursor!, limit: 1 });
     expect(second.items.map((message) => message.subject)).toEqual(["message-1"]);
+    expect(second.total).toBe(2);
     expect(second.nextCursor).toBeNull();
 
-    expect(db.listMessages({ view: "all", filter: ["verification_code", "attachment", "forwarded"], limit: 10 }).items
-      .map((message) => message.subject)).toEqual(["message-4"]);
+    const fullyFiltered = db.listMessages({ view: "all", filter: ["verification_code", "attachment", "forwarded"], limit: 10 });
+    expect(fullyFiltered.items.map((message) => message.subject)).toEqual(["message-4"]);
+    expect(fullyFiltered.total).toBe(1);
     db.close();
+  });
+
+  it("keeps download metadata encrypted and normalizes legacy attachment names", () => {
+    const { db, path } = database();
+    const account = db.createAccount({ email: "attachments@gmail.com", password: "secret" });
+    const storedId = db.upsertMessage({
+      accountId: account.id, folder: "inbox", mailboxPath: "Custom/Files", uid: 7, uidValidity: "9", read: true,
+      displayTime: "2026-01-01T00:00:00.000Z",
+      content: {
+        subject: "Attachments", from: [], to: [], cc: [], preview: "", text: "", html: null,
+        attachmentMetadataVersion: 1,
+        attachments: [{ id: "stable-id", part: "2.1", filename: "账单.pdf", contentType: "application/pdf", size: 2048, encoding: "base64" }]
+      }
+    });
+    const legacyId = db.upsertMessage({
+      accountId: account.id, folder: "inbox", mailboxPath: "INBOX", uid: 8, uidValidity: "9", read: true,
+      displayTime: "2026-01-02T00:00:00.000Z",
+      content: { subject: "Legacy", from: [], to: [], cc: [], preview: "", text: "", html: null, attachments: ["legacy.txt"] }
+    });
+
+    expect(db.getMessage(storedId)?.attachments).toEqual([{ id: "stable-id", filename: "账单.pdf", contentType: "application/pdf", size: 2048 }]);
+    expect(db.getMessage(storedId)?.attachments[0]).not.toHaveProperty("part");
+    expect(db.getAttachmentTransport(storedId, "stable-id")).toMatchObject({ mailboxPath: "Custom/Files", uid: 7, uidValidity: "9", attachment: { part: "2.1" } });
+    expect(db.getMessage(legacyId)?.attachments).toEqual([{ id: null, filename: "legacy.txt", contentType: "application/octet-stream", size: null }]);
+    expect(db.getAttachmentTransport(legacyId, "legacy.txt")).toBeNull();
+    db.close();
+    const bytes = readFileSync(path).toString("utf8");
+    expect(bytes).not.toContain("账单.pdf");
+    expect(bytes).not.toContain("Custom/Files");
   });
 
   it("returns the cached and unread message counts for each account", () => {
@@ -183,25 +215,30 @@ describe("AppDatabase", () => {
     db.raw.prepare("UPDATE accounts SET config_enc = ? WHERE id = ?")
       .run(db.crypto.encrypt({ email: stored.email, imap: stored.imap }), account.id);
     expect(db.listAccounts()[0]!.aliases).toEqual([]);
-    db.raw.exec("ALTER TABLE settings DROP COLUMN poll_interval_seconds; ALTER TABLE settings DROP COLUMN page_size; ALTER TABLE accounts DROP COLUMN sync_mode; ALTER TABLE accounts DROP COLUMN sort_order; PRAGMA user_version = 1;");
+    db.raw.exec("ALTER TABLE settings DROP COLUMN poll_interval_seconds; ALTER TABLE settings DROP COLUMN page_size; ALTER TABLE settings DROP COLUMN max_concurrent_downloads; ALTER TABLE settings DROP COLUMN max_attachment_size_mb; ALTER TABLE settings DROP COLUMN remote_image_allowlist_enc; ALTER TABLE accounts DROP COLUMN sync_mode; ALTER TABLE accounts DROP COLUMN sort_order; PRAGMA user_version = 1;");
     db.close();
 
     const migrated = new AppDatabase(path, "t".repeat(32));
-    expect(migrated.raw.pragma("user_version", { simple: true })).toBe(5);
-    expect(migrated.getSettings()).toEqual({ maxMessagesPerAccount: 100, pollIntervalSeconds: 10, pageSize: 100 });
+    expect(migrated.raw.pragma("user_version", { simple: true })).toBe(7);
+    expect(migrated.getSettings()).toEqual({ maxMessagesPerAccount: 100, pollIntervalSeconds: 10, pageSize: 100, maxConcurrentDownloads: 3, maxAttachmentSizeMb: 100, remoteImageAllowlist: [] });
     expect(migrated.listAccounts()[0]).toMatchObject({ email: "migration@qq.com", syncMode: null });
     migrated.close();
   });
 
-  it("updates polling, retention and pagination settings independently", () => {
-    const { db } = database();
-    expect(db.updateSettings({ pollIntervalSeconds: 25 }).settings).toEqual({ maxMessagesPerAccount: 100, pollIntervalSeconds: 25, pageSize: 100 });
-    expect(db.updateSettings({ maxMessagesPerAccount: 80 }).settings).toEqual({ maxMessagesPerAccount: 80, pollIntervalSeconds: 25, pageSize: 100 });
-    expect(db.updateSettings({ pageSize: 60 }).settings).toEqual({ maxMessagesPerAccount: 80, pollIntervalSeconds: 25, pageSize: 60 });
+  it("updates polling, retention, pagination and encrypted image settings independently", () => {
+    const { db, path } = database();
+    expect(db.updateSettings({ pollIntervalSeconds: 25 }).settings).toEqual({ maxMessagesPerAccount: 100, pollIntervalSeconds: 25, pageSize: 100, maxConcurrentDownloads: 3, maxAttachmentSizeMb: 100, remoteImageAllowlist: [] });
+    expect(db.updateSettings({ maxMessagesPerAccount: 80 }).settings).toEqual({ maxMessagesPerAccount: 80, pollIntervalSeconds: 25, pageSize: 100, maxConcurrentDownloads: 3, maxAttachmentSizeMb: 100, remoteImageAllowlist: [] });
+    expect(db.updateSettings({ pageSize: 60, maxConcurrentDownloads: 4, maxAttachmentSizeMb: 200 }).settings).toEqual({ maxMessagesPerAccount: 80, pollIntervalSeconds: 25, pageSize: 60, maxConcurrentDownloads: 4, maxAttachmentSizeMb: 200, remoteImageAllowlist: [] });
+    expect(db.updateSettings({ remoteImageAllowlist: [" Trusted@Example.com ", "trusted@example.com"] }).settings)
+      .toEqual({ maxMessagesPerAccount: 80, pollIntervalSeconds: 25, pageSize: 60, maxConcurrentDownloads: 4, maxAttachmentSizeMb: 200, remoteImageAllowlist: ["trusted@example.com"] });
     expect(() => db.updateSettings({ pollIntervalSeconds: 4 })).toThrow();
     expect(() => db.updateSettings({ pageSize: 101 })).toThrow();
-    expect(db.getSettings()).toEqual({ maxMessagesPerAccount: 80, pollIntervalSeconds: 25, pageSize: 60 });
+    expect(() => db.updateSettings({ maxConcurrentDownloads: 11 })).toThrow();
+    expect(() => db.updateSettings({ maxAttachmentSizeMb: 1025 })).toThrow();
+    expect(db.getSettings()).toEqual({ maxMessagesPerAccount: 80, pollIntervalSeconds: 25, pageSize: 60, maxConcurrentDownloads: 4, maxAttachmentSizeMb: 200, remoteImageAllowlist: ["trusted@example.com"] });
     db.close();
+    expect(readFileSync(path).toString("utf8")).not.toContain("trusted@example.com");
   });
 
   it("skips bodies that cannot enter the combined retention window", () => {

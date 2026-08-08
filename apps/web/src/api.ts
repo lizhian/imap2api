@@ -20,6 +20,19 @@ export class ApiClient {
     return response.json() as Promise<T>;
   }
 
+  async download(path: string, signal: AbortSignal, onStarted?: () => void): Promise<Blob> {
+    const response = await fetch(`/api/v1${path}`, {
+      headers: { Authorization: `Bearer ${this.token}` },
+      signal
+    });
+    if (!response.ok) {
+      const body = await response.json().catch(() => null) as ApiError | null;
+      throw new Error(body?.error.message ?? `附件下载失败 (${response.status})`);
+    }
+    onStarted?.();
+    return response.blob();
+  }
+
   async subscribe(onEvent: (event: ServerEvent) => void, signal: AbortSignal, accountId?: string): Promise<void> {
     const query = accountId ? `?accountId=${encodeURIComponent(accountId)}` : "";
     const response = await fetch(`/api/v1/events${query}`, {

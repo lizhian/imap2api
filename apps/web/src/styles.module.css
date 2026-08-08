@@ -252,7 +252,10 @@
 .senderWidthProbe { position: absolute; width: max-content; visibility: hidden; pointer-events: none; font-size: 13px; font-weight: 650; white-space: nowrap; }
 .senderWidthProbe::after { content: attr(data-sender); }
 .pagination { min-height: 46px; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 5px 8px; border-top: 1px solid var(--border-soft); background: var(--surface-raised); }
+.pagination > .button { min-width: 0; gap: 4px; padding-inline: 6px; }
 .pagination span { color: var(--text-tertiary); font-size: 11px; }
+.paginationInfo { min-width: 0; display: grid; justify-items: center; gap: 1px; line-height: 1.25; text-align: center; white-space: nowrap; }
+.paginationInfo strong { color: var(--text-secondary); font-size: 12px; font-weight: 600; }
 
 .detailPane { min-width: 0; min-height: 0; overflow: hidden; }
 .detailPane > .emptyState { height: 100%; }
@@ -263,9 +266,9 @@
 .detailActions, .detailUtilities { gap: 3px; }
 .detailToolbar .messageLabels, .detailToolbar .button { flex: none; }
 .toolbarLabels { flex-wrap: nowrap; }
-.toolbarLabels > :is(span, button), .junkLabel { height: 24px; min-height: 24px; padding: 0 7px; border: 1px solid transparent; border-radius: 5px; background: var(--color-base-200); color: var(--text-secondary); font-size: 12px; font-weight: 520; }
+.toolbarLabels > :is(span, button) { height: 24px; min-height: 24px; padding: 0 7px; border: 1px solid transparent; border-radius: 5px; background: var(--color-base-200); color: var(--text-secondary); font-size: 12px; font-weight: 520; }
 .toolbarLabels > :is(span, button)[data-label="verification_code"] { background: color-mix(in oklab, var(--color-secondary) 8%, var(--color-base-100)); color: var(--signal); }
-.toolbarLabels > :is(span, button)[data-label="unsubscribe"], .junkLabel { background: color-mix(in oklab, var(--color-warning) 10%, var(--color-base-100)); color: color-mix(in oklab, var(--color-warning) 58%, var(--color-base-content)); }
+.toolbarLabels > :is(span, button)[data-label="unsubscribe"] { background: color-mix(in oklab, var(--color-warning) 10%, var(--color-base-100)); color: color-mix(in oklab, var(--color-warning) 58%, var(--color-base-content)); }
 .copyableForwardedVia { appearance: none; font: inherit; cursor: copy; transition: background-color var(--fast) var(--ease), color var(--fast) var(--ease), box-shadow var(--fast) var(--ease); }
 .copyableForwardedVia:hover { background: var(--color-base-300); color: var(--text); }
 .copyableForwardedVia:focus-visible, .addressCopyButton:focus-visible { outline: 2px solid var(--signal); outline-offset: 2px; }
@@ -300,7 +303,14 @@
 .copyToastSuccess { color: var(--success); }
 .copyToastError { color: var(--danger); }
 .attachments { display: flex; flex-wrap: wrap; gap: 6px; }
-.attachments span { display: inline-flex; align-items: center; gap: 4px; padding: 3px 7px; border-radius: 999px; background: var(--color-base-200); color: var(--text); }
+.attachmentButton { max-width: 100%; min-height: 28px; height: 28px; display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto; align-items: center; gap: 5px; padding: 0 7px; border: 1px solid var(--border-soft); border-radius: 5px; background: var(--color-base-200); color: var(--text-secondary); font-size: 12px; font-weight: 520; }
+.attachmentButton:hover:not(:disabled), .attachmentButton:focus-visible { border-color: var(--border); background: var(--color-base-300); color: var(--text); }
+.attachmentButton:disabled { opacity: .62; cursor: not-allowed; }
+.attachmentName { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.attachmentSize { color: var(--text-tertiary); font-size: 11px; white-space: nowrap; }
+.attachmentStatus { color: var(--signal); font-size: 11px; white-space: nowrap; }
+.attachmentStatus:empty { display: none; }
+.attachmentError, .attachmentError .attachmentStatus { color: var(--danger); }
 .bodyDivider { grid-row: 3; height: 1px; margin: 0 18px; background: var(--border-soft); }
 .mailBodyFrame { grid-row: 4; width: 100%; height: 100%; min-height: 0; display: block; border: 0; background: white; }
 .textBody { grid-row: 4; min-height: 0; margin: 0; overflow: auto; padding: 16px 18px 24px; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text); font: 14px/1.7 inherit; }
@@ -309,7 +319,8 @@
 .settingsForm { min-height: 104px; display: grid; gap: 12px; padding: 14px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); }
 .settingsField { display: grid; grid-template-columns: 176px minmax(0, 1fr); align-items: start; gap: 4px 16px; }
 .settingsField > label { grid-row: 1 / span 2; align-self: start; padding-top: 10px; }
-.settingsField > .numberControl, .settingsField > p { grid-column: 2; }
+.settingsField > .numberControl, .settingsField > .settingsValue, .settingsField > p { grid-column: 2; }
+.settingsValue { min-width: 0; display: grid; gap: 6px; }
 .settingsForm > .button { justify-self: end; }
 .settingsForm p { margin: 0; color: var(--text-secondary); font-size: 12px; line-height: 1.5; }
 .numberControl { display: flex; align-items: center; gap: 9px; }

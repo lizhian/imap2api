@@ -1,14 +1,15 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent as ReactDragEvent, type FormEvent, type KeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
 import * as AlertDialog from "@radix-ui/react-alert-dialog";
+import * as Tooltip from "@radix-ui/react-tooltip";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import {
   Archive, ArrowLeft, Check, ChevronLeft, ChevronRight, CircleAlert, CircleCheck,
-  Cloud, Copy, Edit3, ExternalLink, Eye, EyeOff, FileText, Folder, FolderCog, Forward, GripVertical, Image as ImageIcon, Inbox, KeyRound, LogOut, Mail, MailOpen,
+  Cloud, Copy, Download, Edit3, ExternalLink, Eye, EyeOff, FileText, Folder, FolderCog, Forward, GripVertical, Image as ImageIcon, Inbox, KeyRound, LogOut, Mail, MailOpen,
   Paperclip, Plus, RefreshCw, SearchX, Settings as SettingsIcon, ShieldCheck,
   SlidersHorizontal, Trash2, UserRound, X
 } from "lucide-react";
-import type { Account, AccountInput, AccountOrderUpdate, AccountUpdate, MailboxListResponse, MessageDetail, MessageLabel, MessageListResponse, MessageSecondaryFilter, MessageSummary, MessageView, ProviderId, ServerEvent, Settings, SyncFolderConfig } from "@imap2api/shared";
+import type { Account, AccountInput, AccountOrderUpdate, AccountUpdate, Address, MailboxListResponse, MessageDetail, MessageLabel, MessageListResponse, MessageSecondaryFilter, MessageSummary, MessageView, ProviderId, ServerEvent, Settings, SyncFolderConfig } from "@imap2api/shared";
 import { ApiClient } from "./api";
 import { Button, EmptyState, IconButton, Spinner } from "./components";
 import styles from "./styles.module.css";
@@ -109,6 +110,11 @@ export function formatRelativeDate(value: string, now = Date.now()): string {
 function senderLabel(message: MessageSummary): string {
   const sender = message.from[0];
   return sender?.name || sender?.address || "未知发件人";
+}
+
+export function senderAllowsRemoteImages(from: Address[], allowlist: string[]): boolean {
+  const allowed = new Set(allowlist.map((address) => address.trim().toLowerCase()));
+  return from.some((sender) => allowed.has(sender.address.trim().toLowerCase()));
 }
 
 export function canShowFullForwardedVia(metaWidth: number, senderNaturalWidth: number, fullMetaWidth: number): boolean {
@@ -644,10 +650,12 @@ function MessagesPage({ api, accounts, accountId, onAccountChange, revision, onL
   const [selected, setSelected] = useState<string | null>(null); const [detail, setDetail] = useState<MessageDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false); const [cursor, setCursor] = useState<string | null>(null);
   const [nextCursor, setNextCursor] = useState<string | null>(null); const [history, setHistory] = useState<Array<string | null>>([]);
+  const [total, setTotal] = useState(0);
   const [pageSize, setPageSize] = useState<number | null>(null);
   const [confirmAll, setConfirmAll] = useState(false);
   const [listWidth, setListWidth] = useState(initialMessageListWidth);
   const [compactFilters, setCompactFilters] = useState(false);
+  const [remoteImageAllowlist, setRemoteImageAllowlist] = useState<string[]>([]);
   const [now, setNow] = useState(Date.now());
   const workspaceRef = useRef<HTMLElement | null>(null);
   const filterBarRef = useRef<HTMLDivElement | null>(null);
@@ -658,8 +666,8 @@ function MessagesPage({ api, accounts, accountId, onAccountChange, revision, onL
 
   useEffect(() => {
     api.request<Settings>("/settings")
-      .then((value) => setPageSize(value.pageSize ?? 100))
-      .catch((error) => { setPageSize(100); onNotice({ kind: "error", text: error instanceof Error ? error.message : "分页设置加载失败" }); });
+      .then((value) => { setPageSize(value.pageSize ?? 100); setRemoteImageAllowlist(value.remoteImageAllowlist ?? []); })
+      .catch((error) => { setPageSize(100); setRemoteImageAllowlist([]); onNotice({ kind: "error", text: error instanceof Error ? error.message : "分页设置加载失败" }); });
   }, [api, onNotice]);
 
   const load = useCallback(async (background = false) => {
@@ -668,7 +676,7 @@ function MessagesPage({ api, accounts, accountId, onAccountChange, revision, onL
     const query = new URLSearchParams({ view, limit: String(pageSize) });
     secondaryFilters.forEach((filter) => query.append("filter", filter));
     if (accountId) query.set("accountId", accountId); if (cursor) query.set("cursor", cursor);
-    try { const result = await api.request<MessageListResponse>(`/messages?${query}`); setItems(result.items); setNextCursor(result.nextCursor); }
+    try { const result = await api.request<MessageListResponse>(`/messages?${query}`); setItems(result.items); setNextCursor(result.nextCursor); setTotal(result.total ?? result.items.length); }
     catch (error) { onNotice({ kind: "error", text: error instanceof Error ? error.message : "邮件加载失败" }); }
     finally { if (background) setRefreshing(false); else setLoading(false); }
   }, [accountId, api, cursor, onNotice, pageSize, revision, secondaryFilters, view]);
@@ -764,6 +772,8 @@ function MessagesPage({ api, accounts, accountId, onAccountChange, revision, onL
     setListWidth(value);
     storeLayoutWidth("messageList", value);
   }, []);
+  const currentPage = history.length + 1;
+  const totalPages = Math.max(1, Math.ceil(total / (pageSize ?? 100)));
 
   return <section ref={workspaceRef} className={styles.mailWorkspace} style={{ "--mail-list-width": `${listWidth}px` } as CSSProperties}>
     <div className={`${styles.mailListPane} ${selected ? styles.mobileHidden : ""}`}>
@@ -794,11 +804,11 @@ function MessagesPage({ api, accounts, accountId, onAccountChange, revision, onL
           <span className={styles.messageMain}><MessageMeta message={message} now={now} /><span className={styles.messageSubject}>{message.subject}</span><span className={styles.messagePreview}>{message.preview || "无正文预览"}</span></span>
         </button>)}
       </div>
-      <div className={styles.pagination}><Button variant="quiet" disabled={!history.length} onClick={() => { const previous = [...history]; const value = previous.pop() ?? null; setHistory(previous); setCursor(value); }}><ChevronLeft size={16} />上一页</Button><span>每页 {pageSize ?? 100} 封</span><Button variant="quiet" disabled={!nextCursor} onClick={() => { setHistory((values) => [...values, cursor]); setCursor(nextCursor); }} >下一页<ChevronRight size={16} /></Button></div>
+      <div className={styles.pagination}><Button variant="quiet" disabled={!history.length} onClick={() => { const previous = [...history]; const value = previous.pop() ?? null; setHistory(previous); setCursor(value); }}><ChevronLeft size={16} />上一页</Button><span className={styles.paginationInfo} aria-label={`第 ${currentPage} / ${totalPages} 页，共 ${total} 封，每页 ${pageSize ?? 100} 封`}><strong>第 {currentPage} / {totalPages} 页</strong><span>共 {total} 封 · 每页 {pageSize ?? 100} 封</span></span><Button variant="quiet" disabled={!nextCursor} onClick={() => { setHistory((values) => [...values, cursor]); setCursor(nextCursor); }} >下一页<ChevronRight size={16} /></Button></div>
     </div>
     <ResizeHandle value={listWidth} min={MESSAGE_LIST_MIN_WIDTH} max={() => Math.max(MESSAGE_LIST_MIN_WIDTH, (workspaceRef.current?.clientWidth ?? window.innerWidth) - DETAIL_MIN_WIDTH)} label="调整邮件列表宽度" onChange={updateListWidth} />
     <div className={`${styles.detailPane} ${selected ? styles.detailVisible : ""}`}>
-      {detailLoading ? <div className={styles.centerState}><Spinner label="正在读取邮件" /></div> : detail ? <MessageDetailView message={detail} onBack={() => { setSelected(null); setDetail(null); }} onMark={(read) => void mark(detail, read)} /> : <EmptyState icon={<FileText size={28} />} title="选择一封邮件查看内容" />}
+      {detailLoading ? <div className={styles.centerState}><Spinner label="正在读取邮件" /></div> : detail ? <MessageDetailView api={api} message={detail} remoteImageAllowlist={remoteImageAllowlist} onBack={() => { setSelected(null); setDetail(null); }} onMark={(read) => void mark(detail, read)} /> : <EmptyState icon={<FileText size={28} />} title="选择一封邮件查看内容" />}
     </div>
     <ConfirmDialog open={confirmAll} title="将缓存邮件全部标记为已读？" description={accountId ? "操作会同步更新当前账号已缓存的收件箱和垃圾箱邮件。" : "操作会同步更新所有账号已缓存的收件箱和垃圾箱邮件。"} confirmLabel="全部已读" onOpenChange={setConfirmAll} onConfirm={() => void markAll()} />
   </section>;
@@ -861,22 +871,35 @@ function MessageMeta({ message, now }: { message: MessageSummary; now: number })
   </span>;
 }
 
-export function MessageDetailView({ message, onBack, onMark }: { message: MessageDetail; onBack: () => void; onMark: (read: boolean) => void }) {
+type AttachmentDownloadStatus = "waiting" | "downloading" | "completed" | "error";
+
+export function formatAttachmentSize(size: number | null): string | null {
+  if (size === null || !Number.isFinite(size) || size < 0) return null;
+  if (size < 1024) return `${size} B`;
+  if (size < 1024 * 1024) return `${(size / 1024).toFixed(size < 10 * 1024 ? 1 : 0)} KB`;
+  return `${(size / (1024 * 1024)).toFixed(size < 10 * 1024 * 1024 ? 1 : 0)} MB`;
+}
+
+export function MessageDetailView({ api, message, remoteImageAllowlist = [], onBack, onMark }: { api: ApiClient; message: MessageDetail; remoteImageAllowlist?: string[]; onBack: () => void; onMark: (read: boolean) => void }) {
   const [remoteImagesForMessage, setRemoteImagesForMessage] = useState<string | null>(null);
   const [pendingLink, setPendingLink] = useState<{ url: string; label: string } | null>(null);
   const [unsubscribePending, setUnsubscribePending] = useState(false);
   const [copyState, setCopyState] = useState<"copied" | "error" | null>(null);
   const [addressCopyState, setAddressCopyState] = useState<{ target: string; address: string; status: "copied" | "error" } | null>(null);
   const [metadataCollapsed, setMetadataCollapsed] = useState(false);
+  const [attachmentDownloads, setAttachmentDownloads] = useState<Record<string, AttachmentDownloadStatus>>({});
   const lastBodyScrollTop = useRef(0);
   const frameCleanupRef = useRef<(() => void) | null>(null);
   const addressCopyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const addressCopyRequestRef = useRef(0);
+  const attachmentControllersRef = useRef(new Map<string, AbortController>());
+  const attachmentTimersRef = useRef(new Map<string, ReturnType<typeof setTimeout>>());
   const reducedMotion = useReducedMotion();
   const metadataTransition = { duration: reducedMotion ? 0 : 0.14, ease: [0.23, 1, 0.32, 1] as const };
   const bodyLayoutTransition = { layout: { duration: reducedMotion ? 0 : 0.18, ease: [0.23, 1, 0.32, 1] as const } };
   const hasRemoteImages = useMemo(() => hasRemoteImageReferences(message.html ?? ""), [message.html]);
-  const remoteImagesLoaded = remoteImagesForMessage === message.id;
+  const autoLoadRemoteImages = useMemo(() => senderAllowsRemoteImages(message.from, remoteImageAllowlist), [message.from, remoteImageAllowlist]);
+  const remoteImagesLoaded = autoLoadRemoteImages || remoteImagesForMessage === message.id;
   const srcDoc = useMemo(() => message.html ? buildMessageSrcDoc(message.html, remoteImagesLoaded) : "", [message.html, remoteImagesLoaded]);
   useEffect(() => {
     setPendingLink(null);
@@ -887,11 +910,20 @@ export function MessageDetailView({ message, onBack, onMark }: { message: Messag
     if (addressCopyTimerRef.current) clearTimeout(addressCopyTimerRef.current);
     addressCopyTimerRef.current = null;
     setMetadataCollapsed(false);
+    setAttachmentDownloads({});
+    for (const controller of attachmentControllersRef.current.values()) controller.abort();
+    attachmentControllersRef.current.clear();
+    for (const timer of attachmentTimersRef.current.values()) clearTimeout(timer);
+    attachmentTimersRef.current.clear();
     lastBodyScrollTop.current = 0;
     return () => {
       frameCleanupRef.current?.();
       frameCleanupRef.current = null;
       if (addressCopyTimerRef.current) clearTimeout(addressCopyTimerRef.current);
+      for (const controller of attachmentControllersRef.current.values()) controller.abort();
+      attachmentControllersRef.current.clear();
+      for (const timer of attachmentTimersRef.current.values()) clearTimeout(timer);
+      attachmentTimersRef.current.clear();
     };
   }, [message.id]);
   const handleBodyScroll = useCallback((scrollTop: number) => {
@@ -973,13 +1005,47 @@ export function MessageDetailView({ message, onBack, onMark }: { message: Messag
     if (unsubscribeUrl) window.open(unsubscribeUrl, "_blank", "noopener,noreferrer");
     setUnsubscribePending(false);
   };
+  const downloadAttachment = async (attachment: MessageDetail["attachments"][number]) => {
+    if (!attachment.id) return;
+    const currentController = attachmentControllersRef.current.get(attachment.id);
+    if (currentController) {
+      currentController.abort();
+      attachmentControllersRef.current.delete(attachment.id);
+      setAttachmentDownloads((current) => { const next = { ...current }; delete next[attachment.id!]; return next; });
+      return;
+    }
+    const controller = new AbortController();
+    attachmentControllersRef.current.set(attachment.id, controller);
+    setAttachmentDownloads((current) => ({ ...current, [attachment.id!]: "waiting" }));
+    try {
+      const blob = await api.download(`/messages/${message.id}/attachments/${encodeURIComponent(attachment.id)}`, controller.signal, () => {
+        setAttachmentDownloads((current) => ({ ...current, [attachment.id!]: "downloading" }));
+      });
+      if (controller.signal.aborted) return;
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = attachment.filename;
+      link.click();
+      URL.revokeObjectURL(url);
+      setAttachmentDownloads((current) => ({ ...current, [attachment.id!]: "completed" }));
+      const timer = setTimeout(() => {
+        setAttachmentDownloads((current) => { const next = { ...current }; delete next[attachment.id!]; return next; });
+        attachmentTimersRef.current.delete(attachment.id!);
+      }, 1600);
+      attachmentTimersRef.current.set(attachment.id, timer);
+    } catch (error) {
+      if (!controller.signal.aborted) setAttachmentDownloads((current) => ({ ...current, [attachment.id!]: "error" }));
+    } finally {
+      if (attachmentControllersRef.current.get(attachment.id) === controller) attachmentControllersRef.current.delete(attachment.id);
+    }
+  };
   const unsubscribeUrl = safeHttpLinkUrl(message.unsubscribeUrl ?? "");
   const unsubscribeHost = unsubscribeUrl ? new URL(unsubscribeUrl).host : "";
   return <article className={styles.messageDetail}>
     <div className={styles.detailToolbar}>
       <IconButton label="返回邮件列表" className={`${styles.backButton} ${styles.detailIconAction}`} onClick={onBack}><ArrowLeft size={17} /></IconButton>
-      {(message.folder === "junk" || message.labels.includes("forwarded")) && <div className={styles.detailContext}>
-        {message.folder === "junk" && <span className={`badge badge-soft badge-sm ${styles.junkLabel}`}>垃圾箱</span>}
+      {message.labels.includes("forwarded") && <div className={styles.detailContext}>
         {message.labels.includes("forwarded") && <MessageLabels labels={["forwarded"]} forwardedVia={message.forwardedVia} toolbar showForwardedVia forwardedCopyState={addressCopyState?.target === "forwarded" ? addressCopyState.status : null} onCopyForwardedVia={(address) => void copyAddress("forwarded", address)} />}
       </div>}
       {(message.verificationCode || unsubscribeUrl) && <div className={styles.detailActions}>
@@ -993,7 +1059,13 @@ export function MessageDetailView({ message, onBack, onMark }: { message: Messag
       </div>
       <span className={styles.srOnly} role="status" aria-live="polite">{addressCopyState ? `${addressCopyState.address} ${addressCopyState.status === "copied" ? "已复制" : "复制失败"}` : copyState === "copied" ? "验证码已复制" : copyState === "error" ? "验证码复制失败" : ""}</span>
     </div>
-    <header className={`${styles.detailHeader} ${metadataCollapsed ? styles.detailHeaderCollapsed : ""}`}><h2>{message.subject}</h2><motion.div className={`${styles.detailMetadata} ${metadataCollapsed ? styles.detailMetadataCollapsed : ""}`} aria-hidden={metadataCollapsed} initial={false} animate={{ opacity: metadataCollapsed ? 0 : 1, y: metadataCollapsed && !reducedMotion ? -4 : 0 }} transition={metadataTransition}><time>{formatDate(message.displayTime)}</time><dl><div><dt>发件人</dt><dd className={styles.addressList}>{addressList(message.from, "from")}</dd></div><div><dt>收件人</dt><dd className={styles.addressList}>{addressList(message.to, "to")}</dd></div>{message.cc.length > 0 && <div><dt>抄送</dt><dd className={styles.addressList}>{addressList(message.cc, "cc")}</dd></div>}{message.attachments.length > 0 && <div><dt>附件</dt><dd className={styles.attachments}>{message.attachments.map((name) => <span key={name}><Paperclip size={13} />{name}</span>)}</dd></div>}</dl></motion.div></header>
+    <header className={`${styles.detailHeader} ${metadataCollapsed ? styles.detailHeaderCollapsed : ""}`}><h2>{message.subject}</h2><motion.div className={`${styles.detailMetadata} ${metadataCollapsed ? styles.detailMetadataCollapsed : ""}`} aria-hidden={metadataCollapsed} initial={false} animate={{ opacity: metadataCollapsed ? 0 : 1, y: metadataCollapsed && !reducedMotion ? -4 : 0 }} transition={metadataTransition}><time>{formatDate(message.displayTime)}</time><dl><div><dt>发件人</dt><dd className={styles.addressList}>{addressList(message.from, "from")}</dd></div><div><dt>收件人</dt><dd className={styles.addressList}>{addressList(message.to, "to")}</dd></div>{message.cc.length > 0 && <div><dt>抄送</dt><dd className={styles.addressList}>{addressList(message.cc, "cc")}</dd></div>}{message.attachments.length > 0 && <div><dt>附件</dt><dd className={styles.attachments}>{message.attachments.map((attachment, index) => {
+      const status = attachment.id ? attachmentDownloads[attachment.id] : undefined;
+      const size = formatAttachmentSize(attachment.size);
+      const active = status === "waiting" || status === "downloading";
+      const label = !attachment.id ? `${attachment.filename}，同步后可下载` : active ? `取消下载 ${attachment.filename}` : status === "error" ? `重试下载 ${attachment.filename}` : `下载 ${attachment.filename}`;
+      return <Tooltip.Provider delayDuration={400} key={attachment.id ?? `${attachment.filename}-${index}`}><Tooltip.Root><Tooltip.Trigger asChild><button type="button" className={`btn btn-ghost btn-xs ${styles.attachmentButton} ${status === "error" ? styles.attachmentError : ""}`} disabled={!attachment.id} tabIndex={metadataCollapsed ? -1 : undefined} aria-label={label} onClick={() => void downloadAttachment(attachment)}>{active ? <X size={13} /> : status === "completed" ? <Check size={13} /> : status === "error" ? <CircleAlert size={13} /> : attachment.id ? <Download size={13} /> : <Paperclip size={13} />}<span className={styles.attachmentName}>{attachment.filename}</span>{size && <span className={styles.attachmentSize}>{size}</span>}<span className={styles.attachmentStatus} role="status" aria-live="polite">{status === "waiting" ? "等待中" : status === "downloading" ? "下载中" : status === "completed" ? "已下载" : status === "error" ? "失败 · 重试" : !attachment.id ? "待同步" : ""}</span></button></Tooltip.Trigger><Tooltip.Portal><Tooltip.Content sideOffset={6} className={styles.tooltip}>{label}{size ? ` · ${size}` : ""}<Tooltip.Arrow className={styles.tooltipArrow} /></Tooltip.Content></Tooltip.Portal></Tooltip.Root></Tooltip.Provider>;
+    })}</dd></div>}</dl></motion.div></header>
     <motion.div layout="position" transition={bodyLayoutTransition} className={styles.bodyDivider} />
     {message.html ? <motion.iframe layout="position" transition={bodyLayoutTransition} title="邮件正文" sandbox="allow-same-origin" className={styles.mailBodyFrame} srcDoc={srcDoc} onLoad={(event) => handleFrameLoad(event.currentTarget)} /> : <motion.pre layout="position" transition={bodyLayoutTransition} className={styles.textBody} onScroll={(event) => handleBodyScroll(event.currentTarget.scrollTop)}>{message.text || "（无正文）"}</motion.pre>}
     <AnimatePresence>{addressCopyState && <motion.div className={styles.copyToast} aria-hidden="true" initial={reducedMotion ? { opacity: 0 } : { opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} exit={reducedMotion ? { opacity: 0 } : { opacity: 0, y: 4 }} transition={{ duration: reducedMotion ? 0 : 0.16, ease: [0.23, 1, 0.32, 1] }}><span className={addressCopyState.status === "copied" ? styles.copyToastSuccess : styles.copyToastError}>{addressCopyState.status === "copied" ? <Check size={14} /> : <CircleAlert size={14} />}{addressCopyState.status === "copied" ? "已复制" : "复制失败"}</span><span>{addressCopyState.address}</span></motion.div>}</AnimatePresence>
@@ -1076,12 +1148,95 @@ export function buildMessageSrcDoc(html: string, loadRemoteImages = false): stri
 }
 
 function SettingsPage({ api, onNotice }: { api: ApiClient; onNotice: (notice: { kind: "success" | "error"; text: string }) => void }) {
-  const [settings, setSettings] = useState<Settings | null>(null); const [value, setValue] = useState("100"); const [interval, setIntervalValue] = useState("10"); const [pageSize, setPageSize] = useState("100"); const [busy, setBusy] = useState(false);
-  useEffect(() => { api.request<Settings>("/settings").then((result) => { setSettings(result); setValue(String(result.maxMessagesPerAccount)); setIntervalValue(String(result.pollIntervalSeconds)); setPageSize(String(result.pageSize ?? 100)); }).catch((error) => onNotice({ kind: "error", text: error.message })); }, [api, onNotice]);
-  const save = async (event: FormEvent) => { event.preventDefault(); setBusy(true); try { const result = await api.request<Settings>("/settings", { method: "PATCH", body: JSON.stringify({ maxMessagesPerAccount: Number(value), pollIntervalSeconds: Number(interval), pageSize: Number(pageSize) }) }); setSettings(result); onNotice({ kind: "success", text: "系统设置已保存" }); } catch (error) { onNotice({ kind: "error", text: error instanceof Error ? error.message : "保存失败" }); } finally { setBusy(false); } };
+  const [settings, setSettings] = useState<Settings | null>(null);
+  const [value, setValue] = useState("100");
+  const [interval, setIntervalValue] = useState("10");
+  const [pageSize, setPageSize] = useState("100");
+  const [maxConcurrentDownloads, setMaxConcurrentDownloads] = useState("3");
+  const [maxAttachmentSizeMb, setMaxAttachmentSizeMb] = useState("100");
+  const [remoteImageAllowlist, setRemoteImageAllowlist] = useState<string[]>([]);
+  const [remoteImageInput, setRemoteImageInput] = useState("");
+  const [busy, setBusy] = useState(false);
+  const remoteImageInputRef = useRef<HTMLInputElement | null>(null);
+  useEffect(() => {
+    api.request<Settings>("/settings").then((result) => {
+      setSettings(result);
+      setValue(String(result.maxMessagesPerAccount));
+      setIntervalValue(String(result.pollIntervalSeconds));
+      setPageSize(String(result.pageSize ?? 100));
+      setMaxConcurrentDownloads(String(result.maxConcurrentDownloads ?? 3));
+      setMaxAttachmentSizeMb(String(result.maxAttachmentSizeMb ?? 100));
+      setRemoteImageAllowlist(result.remoteImageAllowlist ?? []);
+    }).catch((error) => onNotice({ kind: "error", text: error.message }));
+  }, [api, onNotice]);
+  const addRemoteImageSender = () => {
+    const address = remoteImageInput.trim().toLowerCase();
+    if (!address) return;
+    if (!remoteImageInputRef.current?.checkValidity()) {
+      remoteImageInputRef.current?.reportValidity();
+      return;
+    }
+    if (remoteImageAllowlist.length >= 200 && !remoteImageAllowlist.includes(address)) {
+      onNotice({ kind: "error", text: "加载图片白名单最多保存 200 个邮箱地址" });
+      return;
+    }
+    setRemoteImageAllowlist((current) => current.includes(address) ? current : [...current, address]);
+    setRemoteImageInput("");
+  };
+  const save = async (event: FormEvent) => {
+    event.preventDefault();
+    const pendingAddress = remoteImageInput.trim().toLowerCase();
+    if (pendingAddress && !remoteImageInputRef.current?.checkValidity()) {
+      remoteImageInputRef.current?.reportValidity();
+      return;
+    }
+    if (pendingAddress && remoteImageAllowlist.length >= 200 && !remoteImageAllowlist.includes(pendingAddress)) {
+      onNotice({ kind: "error", text: "加载图片白名单最多保存 200 个邮箱地址" });
+      return;
+    }
+    const nextRemoteImageAllowlist = pendingAddress && !remoteImageAllowlist.includes(pendingAddress)
+      ? [...remoteImageAllowlist, pendingAddress]
+      : remoteImageAllowlist;
+    setBusy(true);
+    try {
+      const result = await api.request<Settings>("/settings", {
+        method: "PATCH",
+        body: JSON.stringify({
+          maxMessagesPerAccount: Number(value),
+          pollIntervalSeconds: Number(interval),
+          pageSize: Number(pageSize),
+          maxConcurrentDownloads: Number(maxConcurrentDownloads),
+          maxAttachmentSizeMb: Number(maxAttachmentSizeMb),
+          remoteImageAllowlist: nextRemoteImageAllowlist
+        })
+      });
+      setSettings(result);
+      setRemoteImageAllowlist(result.remoteImageAllowlist ?? []);
+      setRemoteImageInput("");
+      onNotice({ kind: "success", text: "系统设置已保存" });
+    } catch (error) {
+      onNotice({ kind: "error", text: error instanceof Error ? error.message : "保存失败" });
+    } finally {
+      setBusy(false);
+    }
+  };
   if (!settings) return <div className={styles.centerState}><Spinner /></div>;
-  const unchanged = Number(value) === settings.maxMessagesPerAccount && Number(interval) === settings.pollIntervalSeconds && Number(pageSize) === settings.pageSize;
-  return <section className={styles.settingsSection}><div className={styles.sectionToolbar}><div><h2>同步与缓存</h2><p>全局邮件策略</p></div></div><form className={styles.settingsForm} onSubmit={save}><div className={`fieldset ${styles.settingsField}`}><label className="fieldset-legend" htmlFor="max-messages">每个账号最多保留</label><div className={styles.numberControl}><input className="input input-sm" id="max-messages" type="number" min="1" max="10000" value={value} onChange={(event) => setValue(event.target.value)} /><span>封邮件</span></div><p>收件箱和垃圾箱合计计算，超出后删除最旧的本地缓存。</p></div><div className={`fieldset ${styles.settingsField}`}><label className="fieldset-legend" htmlFor="page-size">邮件列表每页显示</label><div className={styles.numberControl}><input className="input input-sm" id="page-size" type="number" min="10" max="100" value={pageSize} onChange={(event) => setPageSize(event.target.value)} /><span>封邮件</span></div><p>控制邮件列表单页加载数量，范围为 10–100 封。</p></div><div className={`fieldset ${styles.settingsField}`}><label className="fieldset-legend" htmlFor="poll-interval">无 IDLE 时轮询间隔</label><div className={styles.numberControl}><input className="input input-sm" id="poll-interval" type="number" min="5" max="3600" value={interval} onChange={(event) => setIntervalValue(event.target.value)} /><span>秒</span></div><p>支持 IDLE 的邮箱保持实时长连接，此设置只用于不支持 IDLE 的服务器。</p></div><Button variant="primary" disabled={busy || unchanged}>{busy ? <Spinner label="正在保存" /> : "保存设置"}</Button></form></section>;
+  const unchanged = Number(value) === settings.maxMessagesPerAccount
+    && Number(interval) === settings.pollIntervalSeconds
+    && Number(pageSize) === settings.pageSize
+    && Number(maxConcurrentDownloads) === (settings.maxConcurrentDownloads ?? 3)
+    && Number(maxAttachmentSizeMb) === (settings.maxAttachmentSizeMb ?? 100)
+    && JSON.stringify(remoteImageAllowlist) === JSON.stringify(settings.remoteImageAllowlist ?? [])
+    && !remoteImageInput.trim();
+  return <section className={styles.settingsSection}><div className={styles.sectionToolbar}><div><h2>同步与缓存</h2><p>全局邮件策略</p></div></div><form className={styles.settingsForm} onSubmit={save}>
+    <div className={`fieldset ${styles.settingsField}`}><label className="fieldset-legend" htmlFor="max-messages">每个账号最多保留</label><div className={styles.numberControl}><input className="input input-sm" id="max-messages" type="number" min="1" max="10000" value={value} onChange={(event) => setValue(event.target.value)} /><span>封邮件</span></div><p>收件箱和垃圾箱合计计算，超出后删除最旧的本地缓存。</p></div>
+    <div className={`fieldset ${styles.settingsField}`}><label className="fieldset-legend" htmlFor="page-size">邮件列表每页显示</label><div className={styles.numberControl}><input className="input input-sm" id="page-size" type="number" min="10" max="100" value={pageSize} onChange={(event) => setPageSize(event.target.value)} /><span>封邮件</span></div><p>控制邮件列表单页加载数量，范围为 10–100 封。</p></div>
+    <div className={`fieldset ${styles.settingsField}`}><label className="fieldset-legend" htmlFor="poll-interval">无 IDLE 时轮询间隔</label><div className={styles.numberControl}><input className="input input-sm" id="poll-interval" type="number" min="5" max="3600" value={interval} onChange={(event) => setIntervalValue(event.target.value)} /><span>秒</span></div><p>支持 IDLE 的邮箱保持实时长连接，此设置只用于不支持 IDLE 的服务器。</p></div>
+    <div className={`fieldset ${styles.settingsField}`}><label className="fieldset-legend" htmlFor="max-concurrent-downloads">附件并发下载</label><div className={styles.numberControl}><input className="input input-sm" id="max-concurrent-downloads" type="number" min="1" max="10" value={maxConcurrentDownloads} onChange={(event) => setMaxConcurrentDownloads(event.target.value)} /><span>个</span></div><p>所有邮箱账号共享，超过限制的下载请求会按顺序等待。</p></div>
+    <div className={`fieldset ${styles.settingsField}`}><label className="fieldset-legend" htmlFor="max-attachment-size">单附件大小上限</label><div className={styles.numberControl}><input className="input input-sm" id="max-attachment-size" type="number" min="1" max="1024" value={maxAttachmentSizeMb} onChange={(event) => setMaxAttachmentSizeMb(event.target.value)} /><span>MB</span></div><p>范围为 1–1024 MB，超过上限的附件不会开始下载。</p></div>
+    <div className={`fieldset ${styles.settingsField}`}><label className="fieldset-legend" htmlFor="remote-image-sender">自动加载图片发件人</label><div className={styles.settingsValue}><div className={styles.aliasInput}><input ref={remoteImageInputRef} className="input input-sm" id="remote-image-sender" type="email" maxLength={320} value={remoteImageInput} onChange={(event) => setRemoteImageInput(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === ",") { event.preventDefault(); addRemoteImageSender(); } }} placeholder="sender@example.com" /><IconButton type="button" label="添加图片白名单" disabled={!remoteImageInput.trim() || (remoteImageAllowlist.length >= 200 && !remoteImageAllowlist.includes(remoteImageInput.trim().toLowerCase()))} onClick={addRemoteImageSender}><Plus size={17} /></IconButton></div>{remoteImageAllowlist.length > 0 && <div className={styles.aliasList}>{remoteImageAllowlist.map((address) => <span className="badge badge-ghost badge-sm" key={address}>{address}<button type="button" aria-label={`移除图片白名单 ${address}`} onClick={() => setRemoteImageAllowlist((current) => current.filter((item) => item !== address))}><X size={14} /></button></span>)}</div>}<p>仅匹配完整发件人邮箱地址，最多 200 个；匹配后打开邮件会自动请求其中的远程图片。</p></div></div>
+    <Button variant="primary" disabled={busy || unchanged}>{busy ? <Spinner label="正在保存" /> : "保存设置"}</Button>
+  </form></section>;
 }
 
 function ConfirmDialog({ open, title, description, descriptionClassName, confirmLabel, danger = false, onOpenChange, onConfirm }: { open: boolean; title: string; description: string; descriptionClassName?: string; confirmLabel: string; danger?: boolean; onOpenChange: (open: boolean) => void; onConfirm: () => void }) {

@@ -1,15 +1,16 @@
 import { ImapFlow } from "imapflow";
 import { simpleParser } from "mailparser";
+import { createHash } from "node:crypto";
 import sanitizeHtml from "sanitize-html";
 import type { Address, FolderKind } from "@imap2api/shared";
-import { AppDatabase, type StoredAccount, type StoredMessageContent } from "./database.js";
+import { AppDatabase, type StoredAccount, type StoredAttachment, type StoredMessageContent } from "./database.js";
 import { EventBroker } from "./events.js";
 import { classifyMail, FORWARDING_HEADER_FIELDS, MAIL_CLASSIFICATION_VERSION, resolveForwardedVia } from "./mail-classifier.js";
 
 interface BodyPartPlan {
   textParts: Array<{ part: string; type: "text/plain" | "text/html"; charset: string; encoding: string }>;
   inlineImages: Array<{ part: string; type: InlineImageType; contentId: string; encoding: string }>;
-  attachments: string[];
+  attachments: StoredAttachment[];
 }
 
 type InlineImageType = "image/png" | "image/jpeg" | "image/gif" | "image/webp";
@@ -18,6 +19,7 @@ const INLINE_IMAGE_TYPES = new Set<InlineImageType>(["image/png", "image/jpeg", 
 const MAX_INLINE_IMAGE_BYTES = 2 * 1024 * 1024;
 const MAX_INLINE_IMAGES_BYTES = 5 * 1024 * 1024;
 const MAIL_HTML_POLICY_VERSION = 2;
+export const MAIL_ATTACHMENT_METADATA_VERSION = 2;
 
 interface MailboxChange {
   accountId: string;
@@ -50,9 +52,10 @@ function getParam(value: unknown, key: string): string | undefined {
 function planBodyParts(root: unknown): BodyPartPlan {
   const textParts: BodyPartPlan["textParts"] = [];
   const inlineImages: BodyPartPlan["inlineImages"] = [];
-  const attachments: string[] = [];
+  const attachments: StoredAttachment[] = [];
+  let unnamedAttachmentIndex = 0;
   let inlineImageBytes = 0;
-  const visit = (node: unknown): void => {
+  const visit = (node: unknown, insideRelated = false): void => {
     if (!node || typeof node !== "object") return;
     const part = node as {
       part?: string; type?: string; subtype?: string; encoding?: string; parameters?: unknown;
@@ -60,17 +63,32 @@ function planBodyParts(root: unknown): BodyPartPlan {
     };
     const mime = (part.type?.includes("/") ? part.type : `${part.type ?? ""}/${part.subtype ?? ""}`).toLowerCase();
     const disposition = part.disposition?.toLowerCase() ?? "";
-    const filename = getParam(part.dispositionParameters, "filename") ?? getParam(part.parameters, "name");
+    const rawFilename = getParam(part.dispositionParameters, "filename") ?? getParam(part.parameters, "name");
+    const filename = rawFilename?.trim();
     const contentId = normalizeContentId(part.id);
-    if (part.part && contentId && disposition !== "attachment" && INLINE_IMAGE_TYPES.has(mime as InlineImageType)
+    const isImage = mime.startsWith("image/");
+    const isBodyInlineImage = isImage && disposition !== "attachment"
+      && (disposition === "inline" || Boolean(contentId && (insideRelated || !filename)));
+    const isInlineImage = Boolean(isBodyInlineImage && part.part && contentId && INLINE_IMAGE_TYPES.has(mime as InlineImageType)
       && typeof part.size === "number" && part.size > 0 && part.size <= MAX_INLINE_IMAGE_BYTES && inlineImages.length < 32
-      && inlineImageBytes + part.size <= MAX_INLINE_IMAGES_BYTES) {
+      && inlineImageBytes + part.size <= MAX_INLINE_IMAGES_BYTES);
+    if (isInlineImage && part.part) {
       inlineImages.push({ part: part.part, type: mime as InlineImageType, contentId, encoding: part.encoding ?? "7bit" });
-      inlineImageBytes += part.size;
-      if (filename) attachments.push(filename);
-    } else if (filename || disposition === "attachment") {
-      if (filename) attachments.push(filename);
-    } else if (part.part && (mime === "text/plain" || mime === "text/html")) {
+      inlineImageBytes += part.size ?? 0;
+    }
+    if (part.part && !isBodyInlineImage && (filename || disposition === "attachment")) {
+      const effectiveFilename = filename || `附件-${++unnamedAttachmentIndex}`;
+      attachments.push({
+        id: createHash("sha256").update(part.part).digest("base64url").slice(0, 16),
+        part: part.part,
+        filename: effectiveFilename,
+        contentType: /^[^\s/]+\/[^\s/]+$/.test(mime) ? mime : "application/octet-stream",
+        size: typeof part.size === "number" && Number.isFinite(part.size) && part.size >= 0 ? part.size : null,
+        encoding: part.encoding?.toLowerCase()
+      });
+      return;
+    }
+    if (part.part && (mime === "text/plain" || mime === "text/html")) {
       textParts.push({
         part: part.part,
         type: mime,
@@ -78,10 +96,11 @@ function planBodyParts(root: unknown): BodyPartPlan {
         encoding: part.encoding ?? "7bit"
       });
     }
-    part.childNodes?.forEach(visit);
+    const childrenInsideRelated = insideRelated || mime === "multipart/related";
+    part.childNodes?.forEach((child) => visit(child, childrenInsideRelated));
   };
   visit(root);
-  return { textParts: textParts.slice(0, 8), inlineImages, attachments: [...new Set(attachments)] };
+  return { textParts: textParts.slice(0, 8), inlineImages, attachments };
 }
 
 function normalizeContentId(value?: string): string {
@@ -194,8 +213,12 @@ export class MailboxSynchronizer {
       for (const message of messages) {
         const read = message.flags?.has("\\Seen") ?? false;
         const known = this.db.getKnownMessage(account.id, path, uidValidity, message.uid);
+        const bodyPlan = planBodyParts(message.bodyStructure);
         if (known && known.htmlPolicyVersion === MAIL_HTML_POLICY_VERSION) {
           let changed = false;
+          if (known.attachmentMetadataVersion !== MAIL_ATTACHMENT_METADATA_VERSION) {
+            changed = this.db.updateAttachmentMetadata(known.id, bodyPlan.attachments, MAIL_ATTACHMENT_METADATA_VERSION) || changed;
+          }
           if (known.classificationVersion !== MAIL_CLASSIFICATION_VERSION) {
             const env = (message.envelope ?? {}) as { to?: unknown; cc?: unknown };
             const forwardedVia = await resolveForwardedVia({
@@ -213,7 +236,7 @@ export class MailboxSynchronizer {
         }
         const displayTime = this.displayTime(message.envelope?.date, message.internalDate);
         if (!known && !this.db.isInRetentionWindow(account.id, displayTime, kind, path, message.uid)) continue;
-        const content = await this.fetchContent(client, account, message.uid, message.envelope, message.headers, planBodyParts(message.bodyStructure));
+        const content = await this.fetchContent(client, account, message.uid, message.envelope, message.headers, bodyPlan);
         const id = this.db.upsertMessage({
           ...(known ? { id: known.id } : {}),
           accountId: account.id, folder: kind, mailboxPath: path, uid: message.uid, uidValidity,
@@ -296,6 +319,7 @@ export class MailboxSynchronizer {
     text = text.trim();
     const content: StoredMessageContent = {
       htmlPolicyVersion: MAIL_HTML_POLICY_VERSION,
+      attachmentMetadataVersion: MAIL_ATTACHMENT_METADATA_VERSION,
       subject: env.subject?.trim() || "（无主题）",
       from: normalizeAddresses(env.from), to: normalizeAddresses(env.to), cc: normalizeAddresses(env.cc),
       preview: text.replace(/\s+/g, " ").trim().slice(0, 180),

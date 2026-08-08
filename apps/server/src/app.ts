@@ -8,6 +8,7 @@ import { AppDatabase } from "./database.js";
 import { ImapService } from "./imap.js";
 import { EventBroker, type PublishedEvent } from "./events.js";
 import { AccountNotFoundError, HttpError, InputError, MessageNotFoundError } from "./errors.js";
+import { DownloadCancelledError } from "./download-limiter.js";
 import type { AppConfig } from "./config.js";
 
 const providerSchema = z.enum(["auto", "qq", "gmail", "icloud", "outlook", "qq-enterprise", "163", "custom"]);
@@ -18,6 +19,9 @@ const imapSchema = z.object({
   secure: z.boolean().optional()
 }).optional();
 const aliasesSchema = z.array(z.string().trim().pipe(z.email().max(320)).transform((value) => value.toLowerCase())).max(50).optional();
+const remoteImageAllowlistSchema = z.array(
+  z.string().trim().pipe(z.email().max(320)).transform((value) => value.toLowerCase())
+).max(200).transform((values) => [...new Set(values)]).optional();
 const accountCreateSchema = z.object({
   email: z.email().max(320),
   password: z.string().min(1).max(4096),
@@ -179,6 +183,28 @@ export async function buildApp(config: AppConfig, dependencies: AppDependencies 
     api.get<{ Params: { id: string } }>("/messages/:id", async (request, reply) => {
       return db.getMessage(request.params.id) ?? sendError(reply, 404, "MESSAGE_NOT_FOUND", "邮件不存在");
     });
+    api.get<{ Params: { id: string; attachmentId: string } }>("/messages/:id/attachments/:attachmentId", async (request, reply) => {
+      const controller = new AbortController();
+      const cancel = () => controller.abort();
+      request.raw.once("aborted", cancel);
+      reply.raw.once("close", cancel);
+      try {
+        const download = await imap.downloadAttachment(request.params.id, request.params.attachmentId, controller.signal);
+        if (controller.signal.aborted) return reply;
+        reply.header("Content-Type", download.contentType);
+        reply.header("Content-Disposition", attachmentContentDisposition(download.filename));
+        reply.header("Cache-Control", "private, no-store");
+        reply.header("X-Content-Type-Options", "nosniff");
+        return reply.send(download.content);
+      } catch (error) {
+        if (error instanceof DownloadCancelledError || controller.signal.aborted) return reply;
+        if (error instanceof HttpError || error instanceof MessageNotFoundError) throw error;
+        request.log.warn({ err: error, messageId: request.params.id }, "IMAP attachment download failed");
+        throw new HttpError(502, "IMAP_DOWNLOAD_FAILED", "附件下载失败");
+      } finally {
+        request.raw.removeListener("aborted", cancel);
+      }
+    });
     api.patch<{ Params: { id: string } }>("/messages/:id/read", async (request, reply) => {
       try {
         const body = z.object({ read: z.boolean() }).parse(request.body);
@@ -206,7 +232,10 @@ export async function buildApp(config: AppConfig, dependencies: AppDependencies 
       const body = z.object({
         maxMessagesPerAccount: z.number().int().min(1).max(10000).optional(),
         pollIntervalSeconds: z.number().int().min(5).max(3600).optional(),
-        pageSize: z.number().int().min(10).max(100).optional()
+        pageSize: z.number().int().min(10).max(100).optional(),
+        maxConcurrentDownloads: z.number().int().min(1).max(10).optional(),
+        maxAttachmentSizeMb: z.number().int().min(1).max(1024).optional(),
+        remoteImageAllowlist: remoteImageAllowlistSchema
       }).refine((value) => Object.keys(value).length > 0, "至少提供一个设置字段").parse(request.body);
       const previous = db.getSettings();
       const result = db.updateSettings(body);
@@ -272,4 +301,12 @@ export async function buildApp(config: AppConfig, dependencies: AppDependencies 
 
   imap.start();
   return app;
+}
+
+function attachmentContentDisposition(filename: string): string {
+  const safeFilename = filename.replace(/[\u0000-\u001f\u007f/\\]/g, "_").trim() || "attachment";
+  const normalized = [...safeFilename].slice(0, 255).join("");
+  const fallback = normalized.replace(/[^\x20-\x7e]/g, "_").replace(/["\\]/g, "_");
+  const encoded = encodeURIComponent(normalized).replace(/[!'()*]/g, (character) => `%${character.charCodeAt(0).toString(16).toUpperCase()}`);
+  return `attachment; filename="${fallback}"; filename*=UTF-8''${encoded}`;
 }

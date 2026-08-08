@@ -94,10 +94,17 @@ export interface MessageSummary {
   forwardedVia: string | null;
 }
 
+export interface MessageAttachment {
+  id: string | null;
+  filename: string;
+  contentType: string;
+  size: number | null;
+}
+
 export interface MessageDetail extends MessageSummary {
   to: Address[];
   cc: Address[];
-  attachments: string[];
+  attachments: MessageAttachment[];
   text: string;
   html: string | null;
   verificationCode: string | null;
@@ -107,12 +114,16 @@ export interface MessageDetail extends MessageSummary {
 export interface MessageListResponse {
   items: MessageSummary[];
   nextCursor: string | null;
+  total: number;
 }
 
 export interface Settings {
   maxMessagesPerAccount: number;
   pollIntervalSeconds: number;
   pageSize: number;
+  maxConcurrentDownloads: number;
+  maxAttachmentSizeMb: number;
+  remoteImageAllowlist: string[];
 }
 
 export interface SyncTriggerResult {

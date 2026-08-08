@@ -2,11 +2,13 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { Readable } from "node:stream";
 import { buildApp } from "./app.js";
 import type { AppConfig } from "./config.js";
 import { EventBroker } from "./events.js";
 import { ImapService } from "./imap.js";
 import { AppDatabase } from "./database.js";
+import { HttpError } from "./errors.js";
 
 const dirs: string[] = [];
 const token = "api-test-token-that-is-at-least-32-characters";
@@ -60,9 +62,50 @@ describe("HTTP API", () => {
     expect(response.statusCode).toBe(400);
     const invalidPageSize = await app.inject({ method: "PATCH", url: "/api/v1/settings", headers: { authorization: `Bearer ${token}` }, payload: { pageSize: 101 } });
     expect(invalidPageSize.statusCode).toBe(400);
-    const updated = await app.inject({ method: "PATCH", url: "/api/v1/settings", headers: { authorization: `Bearer ${token}` }, payload: { pollIntervalSeconds: 25 } });
-    expect(updated.json()).toEqual({ maxMessagesPerAccount: 100, pollIntervalSeconds: 25, pageSize: 100 });
+    expect((await app.inject({ method: "PATCH", url: "/api/v1/settings", headers: { authorization: `Bearer ${token}` }, payload: { maxConcurrentDownloads: 11 } })).statusCode).toBe(400);
+    expect((await app.inject({ method: "PATCH", url: "/api/v1/settings", headers: { authorization: `Bearer ${token}` }, payload: { maxAttachmentSizeMb: 1025 } })).statusCode).toBe(400);
+    const invalidAllowlist = await app.inject({ method: "PATCH", url: "/api/v1/settings", headers: { authorization: `Bearer ${token}` }, payload: { remoteImageAllowlist: ["not-an-email"] } });
+    expect(invalidAllowlist.statusCode).toBe(400);
+    const updated = await app.inject({ method: "PATCH", url: "/api/v1/settings", headers: { authorization: `Bearer ${token}` }, payload: {
+      pollIntervalSeconds: 25,
+      maxConcurrentDownloads: 4,
+      maxAttachmentSizeMb: 200,
+      remoteImageAllowlist: [" Trusted@Example.com ", "trusted@example.com", "images@example.com"]
+    } });
+    expect(updated.json()).toEqual({
+      maxMessagesPerAccount: 100, pollIntervalSeconds: 25, pageSize: 100, maxConcurrentDownloads: 4, maxAttachmentSizeMb: 200,
+      remoteImageAllowlist: ["trusted@example.com", "images@example.com"]
+    });
     expect(applySettings).toHaveBeenCalledWith(10);
+    await app.close();
+  });
+
+  it("streams authenticated attachments with safe download headers and preserves business errors", async () => {
+    const download = vi.spyOn(ImapService.prototype, "downloadAttachment")
+      .mockResolvedValueOnce({
+        content: Readable.from(Buffer.from("pdf-content")),
+        filename: "账单\r\n../evil.pdf",
+        contentType: "application/pdf",
+        expectedSize: 11
+      })
+      .mockRejectedValueOnce(new HttpError(413, "ATTACHMENT_TOO_LARGE", "附件超过系统设置的大小上限"));
+    const app = await buildApp(config());
+    const path = "/api/v1/messages/message-1/attachments/attachment-1";
+
+    expect((await app.inject({ method: "GET", url: path })).statusCode).toBe(401);
+    const response = await app.inject({ method: "GET", url: path, headers: { authorization: `Bearer ${token}` } });
+    expect(response.statusCode).toBe(200);
+    expect(response.rawPayload.toString()).toBe("pdf-content");
+    expect(response.headers["content-type"]).toContain("application/pdf");
+    expect(response.headers["cache-control"]).toBe("private, no-store");
+    expect(response.headers["x-content-type-options"]).toBe("nosniff");
+    expect(response.headers["content-disposition"]).toContain("filename*=UTF-8''");
+    expect(response.headers["content-disposition"]).not.toMatch(/[\r\n]/);
+    expect(download).toHaveBeenCalledWith("message-1", "attachment-1", expect.any(AbortSignal));
+
+    const tooLarge = await app.inject({ method: "GET", url: path, headers: { authorization: `Bearer ${token}` } });
+    expect(tooLarge.statusCode).toBe(413);
+    expect(tooLarge.json()).toMatchObject({ error: { code: "ATTACHMENT_TOO_LARGE" } });
     await app.close();
   });
 

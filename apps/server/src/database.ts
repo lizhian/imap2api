@@ -9,6 +9,7 @@ import type {
   Address,
   ConnectionStatus,
   MessageDetail,
+  MessageAttachment,
   MessageLabel,
   MessageListResponse,
   MessageSecondaryFilter,
@@ -44,6 +45,7 @@ export interface StoredAccount extends Omit<AccountConfigPayload, "aliases"> {
 export interface StoredMessageContent {
   htmlPolicyVersion?: number;
   classificationVersion?: number;
+  attachmentMetadataVersion?: number;
   subject: string;
   from: Address[];
   to: Address[];
@@ -51,12 +53,18 @@ export interface StoredMessageContent {
   preview: string;
   text: string;
   html: string | null;
-  attachments: string[];
+  attachments: Array<string | StoredAttachment>;
   labels?: MessageLabel[];
   verificationCode?: string | null;
   unsubscribeUrl?: string | null;
   forwardedVia?: string | null;
   forwardedViaSource?: ForwardedViaSource | null;
+}
+
+export interface StoredAttachment extends Omit<MessageAttachment, "id"> {
+  id: string;
+  part: string;
+  encoding?: string;
 }
 
 export interface SyncedMessage {
@@ -103,6 +111,15 @@ interface MessageRow {
   content_enc: Buffer;
 }
 
+interface SettingsRow {
+  maxMessagesPerAccount: number;
+  pollIntervalSeconds: number;
+  pageSize: number;
+  maxConcurrentDownloads: number;
+  maxAttachmentSizeMb: number;
+  remoteImageAllowlistEnc: Buffer | null;
+}
+
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS meta (
   key TEXT PRIMARY KEY,
@@ -112,7 +129,10 @@ CREATE TABLE IF NOT EXISTS settings (
   id INTEGER PRIMARY KEY CHECK (id = 1),
   max_messages_per_account INTEGER NOT NULL DEFAULT 100 CHECK (max_messages_per_account BETWEEN 1 AND 10000),
   poll_interval_seconds INTEGER NOT NULL DEFAULT 10 CHECK (poll_interval_seconds BETWEEN 5 AND 3600),
-  page_size INTEGER NOT NULL DEFAULT 100 CHECK (page_size BETWEEN 10 AND 100)
+  page_size INTEGER NOT NULL DEFAULT 100 CHECK (page_size BETWEEN 10 AND 100),
+  max_concurrent_downloads INTEGER NOT NULL DEFAULT 3 CHECK (max_concurrent_downloads BETWEEN 1 AND 10),
+  max_attachment_size_mb INTEGER NOT NULL DEFAULT 100 CHECK (max_attachment_size_mb BETWEEN 1 AND 1024),
+  remote_image_allowlist_enc BLOB
 );
 CREATE TABLE IF NOT EXISTS accounts (
   id TEXT PRIMARY KEY,
@@ -190,7 +210,10 @@ export class AppDatabase {
     }
     this.raw.exec(SCHEMA);
     this.migrate();
-    this.raw.prepare("INSERT OR IGNORE INTO settings(id, max_messages_per_account, poll_interval_seconds, page_size) VALUES (1, 100, ?, 100)")
+    this.raw.prepare(`INSERT OR IGNORE INTO settings(
+      id, max_messages_per_account, poll_interval_seconds, page_size,
+      max_concurrent_downloads, max_attachment_size_mb, remote_image_allowlist_enc
+    ) VALUES (1, 100, ?, 100, 3, 100, NULL)`)
       .run(initialPollIntervalSeconds);
   }
 
@@ -200,16 +223,35 @@ export class AppDatabase {
 
   getSettings(): Settings {
     const row = this.raw.prepare(`SELECT max_messages_per_account AS maxMessagesPerAccount,
-      poll_interval_seconds AS pollIntervalSeconds, page_size AS pageSize FROM settings WHERE id = 1`).get() as Settings;
-    return row;
+      poll_interval_seconds AS pollIntervalSeconds, page_size AS pageSize,
+      max_concurrent_downloads AS maxConcurrentDownloads, max_attachment_size_mb AS maxAttachmentSizeMb,
+      remote_image_allowlist_enc AS remoteImageAllowlistEnc FROM settings WHERE id = 1`).get() as SettingsRow;
+    return {
+      maxMessagesPerAccount: row.maxMessagesPerAccount,
+      pollIntervalSeconds: row.pollIntervalSeconds,
+      pageSize: row.pageSize,
+      maxConcurrentDownloads: row.maxConcurrentDownloads,
+      maxAttachmentSizeMb: row.maxAttachmentSizeMb,
+      remoteImageAllowlist: row.remoteImageAllowlistEnc
+        ? this.crypto.decrypt<string[]>(asBuffer(row.remoteImageAllowlistEnc))
+        : []
+    };
   }
 
   updateSettings(input: Partial<Settings>): { settings: Settings; deleted: Array<{ accountId: string; folder: "inbox" | "junk"; ids: string[] }> } {
     return this.raw.transaction(() => {
       const current = this.getSettings();
-      const next = { ...current, ...input };
-      this.raw.prepare("UPDATE settings SET max_messages_per_account = ?, poll_interval_seconds = ?, page_size = ? WHERE id = 1")
-        .run(next.maxMessagesPerAccount, next.pollIntervalSeconds, next.pageSize);
+      const next = {
+        ...current,
+        ...input,
+        remoteImageAllowlist: input.remoteImageAllowlist
+          ? [...new Set(input.remoteImageAllowlist.map((address) => address.trim().toLowerCase()))]
+          : current.remoteImageAllowlist
+      };
+      this.raw.prepare(`UPDATE settings SET max_messages_per_account = ?, poll_interval_seconds = ?, page_size = ?,
+        max_concurrent_downloads = ?, max_attachment_size_mb = ?, remote_image_allowlist_enc = ? WHERE id = 1`)
+        .run(next.maxMessagesPerAccount, next.pollIntervalSeconds, next.pageSize, next.maxConcurrentDownloads,
+          next.maxAttachmentSizeMb, this.crypto.encrypt(next.remoteImageAllowlist));
       const deleted: Array<{ accountId: string; folder: "inbox" | "junk"; ids: string[] }> = [];
       if (next.maxMessagesPerAccount !== current.maxMessagesPerAccount) {
         for (const { id } of this.raw.prepare("SELECT id FROM accounts").all() as Array<{ id: string }>) {
@@ -370,7 +412,7 @@ export class AppDatabase {
     return rows.flatMap((row) => this.resetMailbox(accountId, this.crypto.decrypt<string>(asBuffer(row.path_enc))));
   }
 
-  getKnownMessage(accountId: string, path: string, uidValidity: string, uid: number): { id: string; read: boolean; htmlPolicyVersion: number; classificationVersion: number } | null {
+  getKnownMessage(accountId: string, path: string, uidValidity: string, uid: number): { id: string; read: boolean; htmlPolicyVersion: number; classificationVersion: number; attachmentMetadataVersion: number } | null {
     const row = this.raw.prepare(`SELECT id, is_read, content_enc FROM messages
       WHERE account_id = ? AND mailbox_key = ? AND uid_validity = ? AND uid = ?`)
       .get(accountId, this.mailboxKey(path), uidValidity, uid) as { id: string; is_read: number; content_enc: Buffer } | undefined;
@@ -378,8 +420,19 @@ export class AppDatabase {
     const content = this.crypto.decrypt<StoredMessageContent>(asBuffer(row.content_enc));
     return {
       id: row.id, read: Boolean(row.is_read), htmlPolicyVersion: content.htmlPolicyVersion ?? 0,
-      classificationVersion: content.classificationVersion ?? 0
+      classificationVersion: content.classificationVersion ?? 0,
+      attachmentMetadataVersion: content.attachmentMetadataVersion ?? 0
     };
+  }
+
+  updateAttachmentMetadata(id: string, attachments: StoredAttachment[], version: number): boolean {
+    const row = this.raw.prepare("SELECT content_enc FROM messages WHERE id = ?").get(id) as { content_enc: Buffer } | undefined;
+    if (!row) return false;
+    const content = this.crypto.decrypt<StoredMessageContent>(asBuffer(row.content_enc));
+    this.raw.prepare("UPDATE messages SET has_attachments = ?, content_enc = ?, updated_at = ? WHERE id = ?")
+      .run(attachments.length ? 1 : 0, this.crypto.encrypt({ ...content, attachments, attachmentMetadataVersion: version }),
+        new Date().toISOString(), id);
+    return true;
   }
 
   reclassifyMessage(id: string, account: StoredAccount, forwardedVia?: ForwardedViaResult | null): boolean {
@@ -491,6 +544,20 @@ export class AppDatabase {
     if (filters.includes("attachment")) conditions.push("has_attachments = 1");
     if (options.after) { conditions.push("display_time >= ?"); params.push(options.after); }
     if (options.before) { conditions.push("display_time < ?"); params.push(options.before); }
+    const baseWhere = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
+    let matchingIds: Set<string> | null = null;
+    let total: number;
+    if (labelFilters.length) {
+      const candidates = this.raw.prepare(`SELECT id, content_enc FROM messages ${baseWhere}`)
+        .all(...params) as Array<Pick<MessageRow, "id" | "content_enc">>;
+      matchingIds = new Set(candidates.filter((row) => {
+        const labels = this.crypto.decrypt<StoredMessageContent>(asBuffer(row.content_enc)).labels ?? [];
+        return labelFilters.every((filter) => labels.includes(filter));
+      }).map((row) => row.id));
+      total = matchingIds.size;
+    } else {
+      total = (this.raw.prepare(`SELECT COUNT(*) AS count FROM messages ${baseWhere}`).get(...params) as { count: number }).count;
+    }
     let scanCursor = options.cursor ? this.decodeCursor(options.cursor) : null;
     const rows: MessageRow[] = [];
     const batchSize = labelFilters.length ? Math.max(100, options.limit * 2) : options.limit + 1;
@@ -505,8 +572,7 @@ export class AppDatabase {
       const batch = this.raw.prepare(`SELECT * FROM messages ${where} ORDER BY display_time DESC, id DESC LIMIT ?`)
         .all(...batchParams, batchSize) as MessageRow[];
       for (const row of batch) {
-        const labels = labelFilters.length ? (this.crypto.decrypt<StoredMessageContent>(asBuffer(row.content_enc)).labels ?? []) : [];
-        if (labelFilters.every((filter) => labels.includes(filter))) rows.push(row);
+        if (!matchingIds || matchingIds.has(row.id)) rows.push(row);
       }
       if (rows.length > options.limit || batch.length < batchSize) break;
       const tail = batch.at(-1);
@@ -518,7 +584,7 @@ export class AppDatabase {
     const accountCache = new Map(this.listAccounts().map((account) => [account.id, account.email]));
     const items = selected.map((row) => this.toMessageSummary(row, accountCache.get(row.account_id) ?? ""));
     const tail = selected.at(-1);
-    return { items, nextCursor: hasMore && tail ? this.encodeCursor(tail.display_time, tail.id) : null };
+    return { items, nextCursor: hasMore && tail ? this.encodeCursor(tail.display_time, tail.id) : null, total };
   }
 
   getMessage(id: string): MessageDetail | null {
@@ -528,9 +594,30 @@ export class AppDatabase {
     const summary = this.toMessageSummary(row, account.email);
     const content = this.crypto.decrypt<StoredMessageContent>(asBuffer(row.content_enc));
     return {
-      ...summary, to: content.to, cc: content.cc, attachments: content.attachments, text: content.text, html: content.html,
+      ...summary, to: content.to, cc: content.cc, attachments: toMessageAttachments(content.attachments), text: content.text, html: content.html,
       verificationCode: content.verificationCode ?? null, unsubscribeUrl: content.unsubscribeUrl ?? null
     };
+  }
+
+  getAttachmentTransport(messageId: string, attachmentId: string): {
+    accountId: string;
+    mailboxPath: string;
+    uid: number;
+    uidValidity: string;
+    attachment: StoredAttachment;
+  } | null {
+    const row = this.raw.prepare(`SELECT account_id, mailbox_path_enc, uid, uid_validity, content_enc
+      FROM messages WHERE id = ?`).get(messageId) as Pick<MessageRow, "account_id" | "mailbox_path_enc" | "uid" | "uid_validity" | "content_enc"> | undefined;
+    if (!row) return null;
+    const content = this.crypto.decrypt<StoredMessageContent>(asBuffer(row.content_enc));
+    const attachment = content.attachments.find((value): value is StoredAttachment => isStoredAttachment(value) && value.id === attachmentId);
+    return attachment ? {
+      accountId: row.account_id,
+      mailboxPath: this.crypto.decrypt<string>(asBuffer(row.mailbox_path_enc)),
+      uid: row.uid,
+      uidValidity: row.uid_validity,
+      attachment
+    } : null;
   }
 
   getMessageTransport(id: string): { accountId: string; folder: "inbox" | "junk"; mailboxPath: string; uid: number } | null {
@@ -599,6 +686,15 @@ export class AppDatabase {
     if (!settingsColumns.has("page_size")) {
       this.raw.exec("ALTER TABLE settings ADD COLUMN page_size INTEGER NOT NULL DEFAULT 100 CHECK (page_size BETWEEN 10 AND 100)");
     }
+    if (!settingsColumns.has("max_concurrent_downloads")) {
+      this.raw.exec("ALTER TABLE settings ADD COLUMN max_concurrent_downloads INTEGER NOT NULL DEFAULT 3 CHECK (max_concurrent_downloads BETWEEN 1 AND 10)");
+    }
+    if (!settingsColumns.has("max_attachment_size_mb")) {
+      this.raw.exec("ALTER TABLE settings ADD COLUMN max_attachment_size_mb INTEGER NOT NULL DEFAULT 100 CHECK (max_attachment_size_mb BETWEEN 1 AND 1024)");
+    }
+    if (!settingsColumns.has("remote_image_allowlist_enc")) {
+      this.raw.exec("ALTER TABLE settings ADD COLUMN remote_image_allowlist_enc BLOB");
+    }
     const accountColumns = new Set((this.raw.pragma("table_info(accounts)") as Array<{ name: string }>).map((column) => column.name));
     if (!accountColumns.has("sync_mode")) {
       this.raw.exec("ALTER TABLE accounts ADD COLUMN sync_mode TEXT CHECK (sync_mode IS NULL OR sync_mode IN ('idle', 'polling'))");
@@ -611,7 +707,7 @@ export class AppDatabase {
     }
     const messageColumns = new Set((this.raw.pragma("table_info(messages)") as Array<{ name: string }>).map((column) => column.name));
     if (!messageColumns.has("mailbox_key")) this.migrateMailboxSchema();
-    this.raw.pragma("user_version = 5");
+    this.raw.pragma("user_version = 7");
   }
 
   private migrateMailboxSchema(): void {
@@ -682,6 +778,25 @@ export class AppDatabase {
       this.raw.pragma("foreign_keys = ON");
     }
   }
+}
+
+function toMessageAttachments(values: StoredMessageContent["attachments"]): MessageAttachment[] {
+  return values.map((value) => typeof value === "string" || !isStoredAttachment(value) ? {
+    id: null,
+    filename: typeof value === "string" ? value : String((value as { filename?: unknown }).filename ?? "附件"),
+    contentType: "application/octet-stream",
+    size: null
+  } : {
+    id: value.id,
+    filename: value.filename,
+    contentType: value.contentType,
+    size: value.size
+  });
+}
+
+function isStoredAttachment(value: string | StoredAttachment): value is StoredAttachment {
+  return typeof value !== "string" && typeof value.id === "string" && typeof value.part === "string"
+    && typeof value.filename === "string" && typeof value.contentType === "string";
 }
 
 function normalizeAliases(email: string, values: string[]): string[] {

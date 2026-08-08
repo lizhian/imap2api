@@ -1,12 +1,43 @@
 import { ImapFlow } from "imapflow";
+import { Transform, type Readable } from "node:stream";
 import type { Account, MailboxListResponse, ReadAllResult, SyncFolderConfig, SyncTriggerResult } from "@imap2api/shared";
 import { AccountSupervisor, isSelectableCustomMailbox, resolveSystemMailboxes, type ImapClientFactory, type ListedMailbox, type PollScheduler } from "./account-supervisor.js";
 import { AppDatabase, type StoredAccount } from "./database.js";
 import { EventBroker } from "./events.js";
 import { AccountNotFoundError, InputError, MessageNotFoundError } from "./errors.js";
+import { HttpError } from "./errors.js";
+import { DownloadCancelledError, DownloadLimiter } from "./download-limiter.js";
+
+export interface AttachmentDownload {
+  content: Readable;
+  filename: string;
+  contentType: string;
+  expectedSize: number | null;
+}
+
+const BYTES_PER_MEGABYTE = 1024 * 1024;
+
+class AttachmentSizeLimitStream extends Transform {
+  private bytes = 0;
+
+  constructor(private readonly maximumBytes: number) {
+    super();
+  }
+
+  override _transform(chunk: Buffer, _encoding: BufferEncoding, callback: (error?: Error | null, data?: Buffer) => void): void {
+    this.bytes += chunk.length;
+    if (this.bytes > this.maximumBytes) {
+      callback(new HttpError(413, "ATTACHMENT_TOO_LARGE", "附件超过系统设置的大小上限"));
+      return;
+    }
+    callback(null, chunk);
+  }
+}
 
 export class ImapService {
   private readonly supervisor: AccountSupervisor;
+  private readonly downloadLimiter: DownloadLimiter;
+  private readonly activeDownloads = new Set<() => Promise<void>>();
 
   constructor(
     private readonly db: AppDatabase,
@@ -19,6 +50,7 @@ export class ImapService {
     }
   ) {
     this.supervisor = new AccountSupervisor(db, events, clientFactory, schedulePoll);
+    this.downloadLimiter = new DownloadLimiter(() => this.db.getSettings().maxConcurrentDownloads);
   }
 
   start(): void {
@@ -26,7 +58,11 @@ export class ImapService {
   }
 
   stop(): Promise<void> {
-    return this.supervisor.stop();
+    this.downloadLimiter.stop();
+    return Promise.all([
+      this.supervisor.stop(),
+      ...[...this.activeDownloads].map((cancel) => cancel())
+    ]).then(() => undefined);
   }
 
   startAccount(accountId: string): void {
@@ -43,6 +79,7 @@ export class ImapService {
 
   applySettings(previousPollIntervalSeconds: number): void {
     this.supervisor.applySettings(previousPollIntervalSeconds);
+    this.downloadLimiter.refresh();
   }
 
   triggerSync(accountId: string): SyncTriggerResult {
@@ -120,6 +157,76 @@ export class ImapService {
       });
     } finally {
       if (client.usable) await client.logout().catch(() => undefined);
+    }
+  }
+
+  async downloadAttachment(messageId: string, attachmentId: string, signal?: AbortSignal): Promise<AttachmentDownload> {
+    if (!this.db.hasMessage(messageId)) throw new MessageNotFoundError();
+    const transport = this.db.getAttachmentTransport(messageId, attachmentId);
+    if (!transport) throw new HttpError(404, "ATTACHMENT_NOT_FOUND", "附件不存在");
+    const settings = this.db.getSettings();
+    const maximumBytes = settings.maxAttachmentSizeMb * BYTES_PER_MEGABYTE;
+    const expectedSize = estimatedDecodedSize(transport.attachment.size, transport.attachment.encoding);
+    if (expectedSize !== null && expectedSize > maximumBytes) {
+      throw new HttpError(413, "ATTACHMENT_TOO_LARGE", "附件超过系统设置的大小上限");
+    }
+
+    const release = await this.downloadLimiter.acquire(signal);
+    const account = this.requireAccount(transport.accountId);
+    const client = this.clientFactory(account);
+    let lock: { release: () => void } | null = null;
+    let source: Readable | null = null;
+    try {
+      await client.connect();
+      if (signal?.aborted) throw new DownloadCancelledError();
+      lock = await client.getMailboxLock(transport.mailboxPath);
+      const currentUidValidity = String(client.mailbox && client.mailbox.uidValidity ? client.mailbox.uidValidity : "");
+      if (currentUidValidity !== transport.uidValidity) {
+        throw new HttpError(410, "ATTACHMENT_STALE", "邮件已发生变化，请同步后重试");
+      }
+      const result = await client.download(transport.uid, transport.attachment.part, { uid: true });
+      if (!result?.content) throw new HttpError(404, "ATTACHMENT_NOT_FOUND", "远端附件不存在");
+      source = result.content;
+      const output = new AttachmentSizeLimitStream(maximumBytes);
+      const forwardSourceError = (error: Error) => output.destroy(error);
+      source.once("error", forwardSourceError);
+      source.pipe(output);
+
+      let cleanupPromise: Promise<void> | null = null;
+      const cleanup = (): Promise<void> => {
+        if (cleanupPromise) return cleanupPromise;
+        cleanupPromise = (async () => {
+          signal?.removeEventListener("abort", cancel);
+          source?.removeListener("error", forwardSourceError);
+          source?.destroy();
+          lock?.release();
+          lock = null;
+          if (client.usable) await client.logout().catch(() => undefined);
+          release();
+        })().finally(() => this.activeDownloads.delete(cancel));
+        return cleanupPromise;
+      };
+      const cancel = (): Promise<void> => {
+        output.destroy(new DownloadCancelledError());
+        return cleanup();
+      };
+      this.activeDownloads.add(cancel);
+      signal?.addEventListener("abort", cancel, { once: true });
+      output.once("end", () => void cleanup());
+      output.once("error", () => void cleanup());
+      output.once("close", () => void cleanup());
+      return {
+        content: output,
+        filename: transport.attachment.filename,
+        contentType: safeContentType(result.meta?.contentType ?? transport.attachment.contentType),
+        expectedSize
+      };
+    } catch (error) {
+      source?.destroy();
+      lock?.release();
+      if (client.usable) await client.logout().catch(() => undefined);
+      release();
+      throw error;
     }
   }
 
@@ -224,4 +331,14 @@ export class ImapService {
     if (!account) throw new AccountNotFoundError();
     return account;
   }
+}
+
+function estimatedDecodedSize(size: number | null, encoding?: string): number | null {
+  if (size === null) return null;
+  return encoding === "base64" ? Math.floor(size / 4) * 3 : size;
+}
+
+function safeContentType(value: string | undefined): string {
+  const normalized = value?.trim().toLowerCase() ?? "";
+  return /^[a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+$/.test(normalized) ? normalized : "application/octet-stream";
 }

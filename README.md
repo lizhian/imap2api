@@ -9,7 +9,7 @@
 - 单封已读/未读和当前账号缓存邮件全部已读
 - QQ、Gmail、iCloud、Outlook、QQ 企业邮箱、163 邮箱预设
 - AES-256-GCM 加密邮箱凭据及邮件内容
-- Docker 单容器部署，不保存或提供附件内容
+- 附件按需从 IMAP 流式下载，不保存附件内容
 
 ## Docker 部署
 
@@ -103,9 +103,10 @@ curl -H "Authorization: Bearer $IMAP2API_TOKEN" \
 | `PUT` | `/api/v1/accounts/:id/sync-folders` | 配置自定义同步文件夹及模式 |
 | `GET` | `/api/v1/messages` | 查询邮件列表 |
 | `GET` | `/api/v1/messages/:id` | 查询邮件详情 |
+| `GET` | `/api/v1/messages/:id/attachments/:attachmentId` | 按需下载附件 |
 | `PATCH` | `/api/v1/messages/:id/read` | 标记已读或未读 |
 | `POST` | `/api/v1/accounts/:id/messages/read-all` | 当前账号缓存全部已读 |
-| `GET/PATCH` | `/api/v1/settings` | 查询或修改缓存上限、分页大小与轮询间隔 |
+| `GET/PATCH` | `/api/v1/settings` | 查询或修改缓存、分页、轮询与附件下载限制 |
 | `GET` | `/api/v1/events` | 订阅邮件缓存和账号状态 SSE 事件 |
 
 邮件列表支持 `accountId`、`view=all|unread|junk`、`after`、`before`、`cursor` 和 `limit`。时间参数使用带时区的 ISO 8601 格式，`limit` 默认 100、最大 100；管理端使用系统设置中的分页大小。
@@ -127,7 +128,7 @@ Gmail、iCloud、QQ、163 等服务通常要求先开启 IMAP，并使用应用�
 - 邮箱地址、服务器配置、凭据、主题、通信地址、正文、附件名和错误详情均加密存储。
 - 时间、UID、文件夹类型、已读状态等查询索引保持明文；真实 IMAP 文件夹路径加密存储，仅保留不可逆索引。
 - 邮件 HTML 会保留常见排版和内联样式，移除脚本、表单、事件属性及可执行内容，并在不允许脚本、弹窗和顶层导航的受限 iframe 中展示。远程图片默认阻止，用户可为当前邮件单独加载；安全且受大小限制的 CID 内嵌图片会本地化显示。正文链接由父页面拦截，确认目标地址后才在新标签打开。
-- 除受限的 CID 正文图片外，普通附件只保存文件名，不下载到 SQLite，也不提供附件管理或下载接口。
+- 除受限的 CID 正文图片外，附件内容不写入 SQLite 或本地文件系统；下载时使用独立 IMAP 连接按 MIME part 流式读取，并受全局并发和单附件大小设置限制。
 
 ## License
 

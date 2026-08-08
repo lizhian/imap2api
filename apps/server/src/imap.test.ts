@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { EventEmitter } from "node:events";
+import { Readable } from "node:stream";
 import { ImapFlow } from "imapflow";
 import { AppDatabase } from "./database.js";
 import { ImapService } from "./imap.js";
@@ -46,6 +47,8 @@ class DeadlockDetectingClient extends EventEmitter {
   listCalls = 0;
   statusCalls = 0;
   readonly storePaths: string[] = [];
+  readonly downloadCalls: Array<{ uid: number; part: string; path: string | null }> = [];
+  downloadContent = Buffer.from("attachment-content");
   options = { disableAutoIdle: false };
   fetchGate: Promise<void> | null = null;
   readonly lockFailures = new Set<string>();
@@ -87,6 +90,13 @@ class DeadlockDetectingClient extends EventEmitter {
     if (this.selectedPath && this.storeFailures.has(this.selectedPath)) throw new Error(`cannot store ${this.selectedPath}`);
     if (this.selectedPath) this.storePaths.push(this.selectedPath);
     return true;
+  }
+  async download(uid: number, part: string) {
+    this.downloadCalls.push({ uid, part, path: this.selectedPath });
+    return {
+      meta: { expectedSize: this.downloadContent.length, contentType: "application/pdf", filename: "remote.pdf" },
+      content: Readable.from(this.downloadContent)
+    };
   }
   async search() {
     this.searchCalls++;
@@ -371,6 +381,60 @@ describe("ImapService", () => {
     await expect(service.markAllRead(account.id)).resolves.toEqual({ count: 2, failedFolders: [] });
     expect(client.storePaths.sort()).toEqual(["Relay/A", "Relay/B"]);
     expect(db.listMessages({ accountId: account.id, view: "unread", limit: 50 }).items).toEqual([]);
+    db.close();
+  });
+
+  it("streams a stored MIME part from its real mailbox and rejects stale or oversized references", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "imap2api-download-")); dirs.push(dir);
+    const db = new AppDatabase(join(dir, "test.db"), "t".repeat(32));
+    const account = db.createAccount({ email: "mail@qq.com", password: "authorization-code" });
+    const messageId = db.upsertMessage({
+      accountId: account.id, folder: "inbox", mailboxPath: "Relay/Files", uid: 42, uidValidity: "1", read: true,
+      displayTime: "2026-01-01T00:00:00.000Z",
+      content: {
+        subject: "Attachment", from: [], to: [], cc: [], preview: "", text: "", html: null,
+        attachmentMetadataVersion: 1,
+        attachments: [{ id: "attachment-id", part: "2.1", filename: "账单.pdf", contentType: "application/pdf", size: 24, encoding: "base64" }]
+      }
+    });
+    const clients: DeadlockDetectingClient[] = [];
+    let nextUidValidity = 1n;
+    const service = new ImapService(db, new EventBroker(), () => {
+      const client = new DeadlockDetectingClient();
+      client.mailbox.uidValidity = nextUidValidity;
+      if (clients.length === 2) client.downloadContent = Buffer.alloc(1024 * 1024 + 1);
+      clients.push(client);
+      return client as unknown as ImapFlow;
+    });
+
+    const result = await service.downloadAttachment(messageId, "attachment-id");
+    const chunks: Buffer[] = [];
+    for await (const chunk of result.content) chunks.push(Buffer.from(chunk));
+    expect(Buffer.concat(chunks).toString()).toBe("attachment-content");
+    expect(result).toMatchObject({ filename: "账单.pdf", contentType: "application/pdf", expectedSize: 18 });
+    expect(clients[0]?.downloadCalls).toEqual([{ uid: 42, part: "2.1", path: "Relay/Files" }]);
+    await vi.waitFor(() => expect(clients[0]?.usable).toBe(false));
+
+    db.updateAttachmentMetadata(messageId, [{ id: "oversized", part: "3", filename: "large.bin", contentType: "application/octet-stream", size: 2 * 1024 * 1024, encoding: "7bit" }], 1);
+    db.updateSettings({ maxAttachmentSizeMb: 1 });
+    await expect(service.downloadAttachment(messageId, "oversized")).rejects.toMatchObject({ statusCode: 413, code: "ATTACHMENT_TOO_LARGE" });
+    expect(clients).toHaveLength(1);
+
+    db.updateSettings({ maxAttachmentSizeMb: 100 });
+    db.updateAttachmentMetadata(messageId, [{ id: "stale", part: "4", filename: "stale.bin", contentType: "application/octet-stream", size: 1 }], 1);
+    nextUidValidity = 2n;
+    await expect(service.downloadAttachment(messageId, "stale")).rejects.toMatchObject({ statusCode: 410, code: "ATTACHMENT_STALE" });
+    expect(clients[1]?.usable).toBe(false);
+
+    nextUidValidity = 1n;
+    db.updateSettings({ maxAttachmentSizeMb: 1 });
+    db.updateAttachmentMetadata(messageId, [{ id: "unknown-size", part: "5", filename: "unknown.bin", contentType: "application/octet-stream", size: null }], 1);
+    const oversizedStream = await service.downloadAttachment(messageId, "unknown-size");
+    await expect((async () => { for await (const _chunk of oversizedStream.content) { /* consume */ } })())
+      .rejects.toMatchObject({ statusCode: 413, code: "ATTACHMENT_TOO_LARGE" });
+    await vi.waitFor(() => expect(clients[2]?.usable).toBe(false));
+
+    await service.stop();
     db.close();
   });
 

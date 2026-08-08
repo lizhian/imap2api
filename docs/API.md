@@ -149,11 +149,20 @@ curl -X POST \
 | --- | --- | --- |
 | `to` | `Address[]` | 收件人列表 |
 | `cc` | `Address[]` | 抄送人列表 |
-| `attachments` | `string[]` | 附件文件名；服务不提供附件内容或下载接口 |
+| `attachments` | `MessageAttachment[]` | 附件元数据；内容不进入本地缓存 |
 | `text` | `string` | 纯文本正文 |
 | `html` | `string \| null` | 经服务端净化的 HTML 正文 |
 | `verificationCode` | `string \| null` | 自动提取的验证码 |
 | `unsubscribeUrl` | `string \| null` | 自动识别的退订链接 |
+
+`MessageAttachment` 字段：
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `id` | `string \| null` | 下载附件使用的不透明 ID；旧缓存尚未完成元数据回填时为 `null` |
+| `filename` | `string` | 附件文件名 |
+| `contentType` | `string` | MIME 类型，未知时为 `application/octet-stream` |
+| `size` | `integer \| null` | IMAP 服务器报告的预计字节数，未知时为 `null` |
 
 ## 3. 接口总览
 
@@ -171,6 +180,7 @@ curl -X POST \
 | `PUT` | `/accounts/:id/sync-folders` | 是 | `200` | 更新自定义同步文件夹及同步模式 |
 | `GET` | `/messages` | 是 | `200` | 分页查询邮件摘要 |
 | `GET` | `/messages/:id` | 是 | `200` | 查询邮件详情 |
+| `GET` | `/messages/:id/attachments/:attachmentId` | 是 | `200` | 按需下载附件 |
 | `PATCH` | `/messages/:id/read` | 是 | `200` | 标记单封邮件已读或未读 |
 | `POST` | `/accounts/:id/messages/read-all` | 是 | `200` / `207` | 标记账号内缓存邮件全部已读 |
 | `GET` | `/settings` | 是 | `200` | 查询系统设置 |
@@ -493,7 +503,8 @@ GET /api/v1/messages?accountId=5f3deca8-7aa3-489a-bcf5-03ca02fb7474&view=unread&
       "labels": ["verification_code"]
     }
   ],
-  "nextCursor": "WyIyMDI2LTA4LTA3VDEwOjI1OjAwLjAwMFoiLCJmMzM4MDg4Ny00MjM4LTQzOWItOTYzNi1iMTY2ZWM1MWUyNzAiXQ"
+  "nextCursor": "WyIyMDI2LTA4LTA3VDEwOjI1OjAwLjAwMFoiLCJmMzM4MDg4Ny00MjM4LTQzOWItOTYzNi1iMTY2ZWM1MWUyNzAiXQ",
+  "total": 128
 }
 ```
 
@@ -501,6 +512,7 @@ GET /api/v1/messages?accountId=5f3deca8-7aa3-489a-bcf5-03ca02fb7474&view=unread&
 | --- | --- | --- |
 | `items` | `MessageSummary[]` | 当前页邮件摘要 |
 | `nextCursor` | `string \| null` | 下一页游标；为 `null` 时没有下一页 |
+| `total` | `integer` | 当前账号、视图、筛选和时间范围下的邮件总数 |
 
 分页时应保留首个请求的 `accountId`、`view`、`after`、`before` 和 `limit`，仅追加或替换 `cursor`。游标依赖当前排序边界，缓存变化后可能出现正常的跨页漂移；对一致性敏感的调用方应在收到 SSE 变更事件后从第一页重新查询。
 
@@ -540,7 +552,14 @@ GET /api/v1/messages/:id
     }
   ],
   "cc": [],
-  "attachments": ["invoice.pdf"],
+  "attachments": [
+    {
+      "id": "-3e7H_XvY9T5jM2Q",
+      "filename": "invoice.pdf",
+      "contentType": "application/pdf",
+      "size": 2048
+    }
+  ],
   "text": "Use 123456 to complete verification.",
   "html": "<p>Use <strong>123456</strong> to complete verification.</p>",
   "verificationCode": "123456",
@@ -552,7 +571,28 @@ GET /api/v1/messages/:id
 
 安全注意：虽然 `html` 已由服务端净化，集成方仍应使用隔离且禁止脚本、弹窗和顶层导航的 sandbox iframe 展示，不能直接注入应用 DOM。远程图片和外部链接也应由宿主应用显式控制。
 
-### 6.3 标记单封邮件已读或未读
+### 6.3 下载附件
+
+```http
+GET /api/v1/messages/:id/attachments/:attachmentId
+Authorization: Bearer <IMAP2API_TOKEN>
+```
+
+服务端使用邮件缓存中的账号、真实文件夹、UID、UIDVALIDITY 和附件 MIME part，从远端 IMAP 按需读取并返回二进制流。附件内容不会写入 SQLite 或本地文件系统。
+
+成功响应包含 `Content-Type`、`Content-Disposition: attachment`、`Cache-Control: private, no-store` 和 `X-Content-Type-Options: nosniff`。下载不支持 HTTP Range、断点续传或批量 ZIP。
+
+可能的业务错误：
+
+- `404 MESSAGE_NOT_FOUND`
+- `404 ATTACHMENT_NOT_FOUND`
+- `410 ATTACHMENT_STALE`：远端邮箱 UIDVALIDITY 已变化，需要先同步
+- `413 ATTACHMENT_TOO_LARGE`
+- `429 DOWNLOAD_QUEUE_FULL`
+- `429 DOWNLOAD_QUEUE_TIMEOUT`
+- `502 IMAP_DOWNLOAD_FAILED`
+
+### 6.4 标记单封邮件已读或未读
 
 ```http
 PATCH /api/v1/messages/:id/read
@@ -589,7 +629,7 @@ PATCH /api/v1/messages/:id/read
 - `404 MESSAGE_NOT_FOUND`
 - `502 IMAP_UPDATE_FAILED`
 
-### 6.4 标记账号内缓存邮件全部已读
+### 6.5 标记账号内缓存邮件全部已读
 
 ```http
 POST /api/v1/accounts/:id/messages/read-all
@@ -646,7 +686,10 @@ GET /api/v1/settings
 {
   "maxMessagesPerAccount": 100,
   "pollIntervalSeconds": 10,
-  "pageSize": 100
+  "pageSize": 100,
+  "maxConcurrentDownloads": 3,
+  "maxAttachmentSizeMb": 100,
+  "remoteImageAllowlist": []
 }
 ```
 
@@ -655,6 +698,9 @@ GET /api/v1/settings
 | `maxMessagesPerAccount` | `integer` | 1–10000 | 每个账号在收件箱和垃圾箱之间合计保留的最大缓存邮件数 |
 | `pollIntervalSeconds` | `integer` | 5–3600 | 不支持 IDLE 的会话轮询间隔；支持 IDLE 的会话不按此间隔轮询 |
 | `pageSize` | `integer` | 10–100 | 管理端邮件列表每页加载的邮件数量 |
+| `maxConcurrentDownloads` | `integer` | 1–10 | 单进程内所有账号共享的附件并发下载上限 |
+| `maxAttachmentSizeMb` | `integer` | 1–1024 | 单附件下载大小上限，1 MB 按 1024 × 1024 字节计算 |
+| `remoteImageAllowlist` | `string[]` | 最多 200 项 | 打开邮件时允许自动加载远程图片的完整发件人邮箱地址 |
 
 ### 7.2 修改设置
 
@@ -668,7 +714,9 @@ PATCH /api/v1/settings
 {
   "maxMessagesPerAccount": 200,
   "pollIntervalSeconds": 30,
-  "pageSize": 60
+  "pageSize": 60,
+  "maxConcurrentDownloads": 4,
+  "maxAttachmentSizeMb": 200
 }
 ```
 
@@ -828,9 +876,15 @@ data: {"accountId":"5f3deca8-7aa3-489a-bcf5-03ca02fb7474","status":"connected","
 | `401` | `UNAUTHORIZED` | Bearer Token 缺失或错误 |
 | `404` | `ACCOUNT_NOT_FOUND` | 账号不存在 |
 | `404` | `MESSAGE_NOT_FOUND` | 邮件不存在或已离开本地缓存 |
+| `404` | `ATTACHMENT_NOT_FOUND` | 附件 ID 不存在或元数据尚未回填 |
 | `404` | `NOT_FOUND` | API 路径不存在 |
 | `409` | `ACCOUNT_EXISTS` | 相同主邮箱账号已存在 |
+| `410` | `ATTACHMENT_STALE` | 远端邮箱已重建，附件引用失效 |
+| `413` | `ATTACHMENT_TOO_LARGE` | 附件超过系统设置的大小上限 |
+| `429` | `DOWNLOAD_QUEUE_FULL` | 附件下载等待队列已满 |
+| `429` | `DOWNLOAD_QUEUE_TIMEOUT` | 附件下载排队超过 30 秒 |
 | `502` | `IMAP_CONNECTION_FAILED` | IMAP 连接测试失败 |
+| `502` | `IMAP_DOWNLOAD_FAILED` | 远端附件下载失败 |
 | `502` | `IMAP_UPDATE_FAILED` | 远端 IMAP 已读写操作失败 |
 | `500` | `INTERNAL_ERROR` | 未处理的服务端错误 |
 
@@ -848,7 +902,7 @@ data: {"accountId":"5f3deca8-7aa3-489a-bcf5-03ca02fb7474","status":"connected","
 - `maxMessagesPerAccount` 是每个账号跨收件箱与垃圾箱的合计缓存上限；较旧邮件可能不存在于 API 中。
 - 邮件 ID 是本地缓存资源 ID。邮件从缓存移除后，对应详情接口会返回 `404 MESSAGE_NOT_FOUND`。
 - 已读接口会修改远端邮箱状态；删除账号和调整缓存上限只修改本地数据，不删除远端邮件。
-- 普通附件只返回文件名，不缓存附件内容，也没有附件下载接口。
+- 附件只在请求下载时从远端 IMAP 流式读取；本地加密缓存仅保存附件元数据，不保存附件内容。
 - 当前认证模型是单个服务级 Bearer Token，没有按调用方、账号或接口划分权限。对外提供能力时，建议由集成方自己的后端代理调用，不要把 Token 下发到不可信客户端。
 - 服务端当前未声明跨域访问策略。浏览器跨域集成应通过同源后端代理或在受控反向代理层配置严格的 CORS。
 

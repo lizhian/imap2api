@@ -76,11 +76,21 @@ describe("mail HTML sanitization", () => {
         },
         headers: Buffer.from("Delivered-To: mail@qq.com\r\nDelivered-To: relay@domain-b.test\r\nTo: source@domain-a.test\r\n"),
         internalDate: new Date("2026-01-01T00:00:00Z"),
-        bodyStructure: { type: "multipart/related", childNodes: [
-          { part: "1", type: "text/html", encoding: "7bit", parameters: { charset: "utf-8" } },
-          { part: "2", type: "image/png", encoding: "base64", id: "<logo@example.test>", size: 12, disposition: "inline" },
-          { part: "3", type: "image/svg+xml", encoding: "base64", id: "<unsafe@example.test>", size: 100, disposition: "inline" },
-          { part: "4", type: "image/png", encoding: "base64", id: "<large@example.test>", size: 3 * 1024 * 1024, disposition: "inline" }
+        bodyStructure: { type: "multipart/mixed", childNodes: [
+          { type: "multipart/related", childNodes: [
+            { part: "1", type: "text/html", encoding: "7bit", parameters: { charset: "utf-8" } },
+            { part: "2", type: "image/png", encoding: "base64", id: "<logo@example.test>", size: 12, disposition: "inline", dispositionParameters: { filename: "logo.png" } },
+            { part: "3", type: "image/svg+xml", encoding: "base64", id: "<unsafe@example.test>", size: 100, disposition: "inline" },
+            { part: "4", type: "image/png", encoding: "base64", id: "<large@example.test>", size: 3 * 1024 * 1024, disposition: "inline" },
+            { part: "9", type: "image/png", encoding: "base64", id: "<related@example.test>", size: 12, parameters: { name: "related.png" } }
+          ] },
+          { part: "5", type: "application/pdf", encoding: "base64", size: 1024, disposition: "attachment", dispositionParameters: { filename: "report.pdf" } },
+          { part: "6", type: "application/pdf", encoding: "base64", size: 2048, disposition: "attachment", dispositionParameters: { filename: "report.pdf" } },
+          { part: "7", type: "application/octet-stream", encoding: "base64", size: 0, disposition: "attachment" },
+          { part: "8", type: "message/rfc822", encoding: "7bit", size: 4096, disposition: "attachment", dispositionParameters: { filename: "original.eml" }, childNodes: [
+            { part: "8.1", type: "application/zip", encoding: "base64", size: 100, disposition: "attachment", dispositionParameters: { filename: "nested.zip" } }
+          ] },
+          { part: "10", type: "image/png", encoding: "base64", size: 12, parameters: { name: "photo.png" } }
         ] }
       }];
       },
@@ -88,8 +98,9 @@ describe("mail HTML sanitization", () => {
         requestedParts.push(...query.bodyParts);
         if (failBodyFetch) throw new Error("body fetch failed");
         return { bodyParts: new Map([
-          ["1", Buffer.from('<style>.logo{width:32px}</style><img class="logo" src="cid:logo@example.test"><img src="https://images.example.test/a.png"><a href="https://example.test">Open</a><img src="cid:unsafe@example.test"><img src="cid:large@example.test">')],
-          ["2", Buffer.from(png.toString("base64"))]
+          ["1", Buffer.from('<style>.logo{width:32px}</style><img class="logo" src="cid:logo@example.test"><img src="cid:related@example.test"><img src="https://images.example.test/a.png"><a href="https://example.test">Open</a><img src="cid:unsafe@example.test"><img src="cid:large@example.test">')],
+          ["2", Buffer.from(png.toString("base64"))],
+          ["9", Buffer.from(png.toString("base64"))]
         ]) };
       }
     };
@@ -103,7 +114,7 @@ describe("mail HTML sanitization", () => {
     const summary = db.listMessages({ accountId: account.id, view: "all", limit: 50 }).items[0]!;
     const detail = db.getMessage(summary.id)!;
     expect(requestedHeaders).toEqual([...FORWARDING_HEADER_FIELDS]);
-    expect(requestedParts).toEqual(["1", "2"]);
+    expect(requestedParts).toEqual(["1", "2", "9"]);
     expect(detail.html).toContain("data:image/png;base64,");
     expect(detail.html).toContain('data-remote-src="https://images.example.test/a.png"');
     expect(detail.html).toContain('data-safe-href="https://example.test/"');
@@ -111,10 +122,30 @@ describe("mail HTML sanitization", () => {
     expect(detail.html).not.toMatch(/unsafe@example\.test|large@example\.test/);
     expect(detail.labels).toEqual(["forwarded"]);
     expect(detail.forwardedVia).toBe("relay@domain-b.test");
+    expect(detail.attachments.map((attachment) => attachment.filename)).toEqual(["report.pdf", "report.pdf", "附件-1", "original.eml", "photo.png"]);
+    expect(detail.attachments.every((attachment) => attachment.id)).toBe(true);
+    expect(detail.attachments.map((attachment) => attachment.size)).toEqual([1024, 2048, 0, 4096, 12]);
 
+    db.upsertMessage({
+      id: summary.id, accountId: account.id, folder: "inbox", mailboxPath: "INBOX", uid: 1, uidValidity: "1",
+      read: false, displayTime: "2026-01-01T00:00:00.000Z",
+      content: {
+        htmlPolicyVersion: 2, classificationVersion: 3, attachmentMetadataVersion: 1,
+        subject: detail.subject, from: detail.from, to: detail.to, cc: detail.cc,
+        preview: detail.preview, text: detail.text, html: detail.html,
+        attachments: [{
+          id: "legacy-inline", part: "2", filename: "logo.png", contentType: "image/png", size: 12, encoding: "base64"
+        }],
+        labels: detail.labels, verificationCode: detail.verificationCode, unsubscribeUrl: detail.unsubscribeUrl,
+        forwardedVia: detail.forwardedVia, forwardedViaSource: "delivery-chain"
+      }
+    });
     requestedParts.splice(0);
     await synchronizer.syncFolder(client as unknown as ImapFlow, account, "inbox", "INBOX", 100);
     expect(requestedParts).toEqual([]);
+    expect(db.getMessage(summary.id)?.attachments.map((attachment) => attachment.filename))
+      .toEqual(["report.pdf", "report.pdf", "附件-1", "original.eml", "photo.png"]);
+    expect(db.getKnownMessage(account.id, "INBOX", "1", 1)?.attachmentMetadataVersion).toBe(2);
 
     db.upsertMessage({
       id: summary.id, accountId: account.id, folder: "inbox", mailboxPath: "INBOX", uid: 1, uidValidity: "1",
@@ -134,7 +165,7 @@ describe("mail HTML sanitization", () => {
     db.upsertMessage({ id: summary.id, accountId: account.id, folder: "inbox", mailboxPath: "INBOX", uid: 1, uidValidity: "1", read: false, displayTime: "2026-01-01T00:00:00.000Z", content: legacyContent });
     expect(db.getKnownMessage(account.id, "INBOX", "1", 1)?.htmlPolicyVersion).toBe(0);
     await synchronizer.syncFolder(client as unknown as ImapFlow, account, "inbox", "INBOX", 100);
-    expect(requestedParts).toEqual(["1", "2"]);
+    expect(requestedParts).toEqual(["1", "2", "9"]);
     expect(updatedIds.at(-1)).toEqual([summary.id]);
     expect(db.getKnownMessage(account.id, "INBOX", "1", 1)?.htmlPolicyVersion).toBe(2);
 

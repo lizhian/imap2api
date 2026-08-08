@@ -1,7 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type { Account, MessageDetail, MessageSummary } from "@imap2api/shared";
-import { App, buildMessageSrcDoc, canShowFullForwardedVia, formatRelativeDate, hasRemoteImageReferences, MessageDetailView } from "./App";
+import { App, buildMessageSrcDoc, canShowFullForwardedVia, formatRelativeDate, hasRemoteImageReferences, MessageDetailView, senderAllowsRemoteImages } from "./App";
+import { ApiClient } from "./api";
+
+const detailApi = new ApiClient("valid-token");
 
 afterEach(() => { cleanup(); sessionStorage.clear(); localStorage.clear(); location.hash = ""; vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
@@ -220,7 +223,7 @@ describe("App authentication", () => {
         return { ok: true, status: 200, body: null, json: async () => JSON.parse(String(init.body)) } as Response;
       }
       const json = async () => url.endsWith("/settings")
-        ? { maxMessagesPerAccount: 100, pollIntervalSeconds: 10, pageSize: 100 }
+        ? { maxMessagesPerAccount: 100, pollIntervalSeconds: 10, pageSize: 100, maxConcurrentDownloads: 3, maxAttachmentSizeMb: 100, remoteImageAllowlist: ["images@example.com"] }
         : url.endsWith("/accounts") ? [] : { ok: true };
       return { ok: true, status: 200, body: null, json } as Response;
     });
@@ -230,13 +233,24 @@ describe("App authentication", () => {
     const max = await screen.findByLabelText("每个账号最多保留");
     const interval = screen.getByLabelText("无 IDLE 时轮询间隔");
     const pageSize = screen.getByLabelText("邮件列表每页显示");
+    const maxConcurrentDownloads = screen.getByLabelText("附件并发下载");
+    const maxAttachmentSize = screen.getByLabelText("单附件大小上限");
+    const remoteImageSender = screen.getByLabelText("自动加载图片发件人");
+    expect(screen.getByText("images@example.com")).toBeInTheDocument();
     fireEvent.change(max, { target: { value: "80" } });
     fireEvent.change(interval, { target: { value: "25" } });
     fireEvent.change(pageSize, { target: { value: "60" } });
+    fireEvent.change(maxConcurrentDownloads, { target: { value: "4" } });
+    fireEvent.change(maxAttachmentSize, { target: { value: "200" } });
+    fireEvent.change(remoteImageSender, { target: { value: "Trusted@Example.com" } });
+    fireEvent.click(screen.getByRole("button", { name: "移除图片白名单 images@example.com" }));
     fireEvent.click(screen.getByRole("button", { name: "保存设置" }));
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/v1/settings", expect.objectContaining({
-      method: "PATCH", body: JSON.stringify({ maxMessagesPerAccount: 80, pollIntervalSeconds: 25, pageSize: 60 })
+      method: "PATCH", body: JSON.stringify({
+        maxMessagesPerAccount: 80, pollIntervalSeconds: 25, pageSize: 60, maxConcurrentDownloads: 4, maxAttachmentSizeMb: 200,
+        remoteImageAllowlist: ["trusted@example.com"]
+      })
     })));
   });
 });
@@ -280,6 +294,30 @@ describe("message list interactions", () => {
     ...summary, to: [{ address: "first@example.com" }], cc: [], attachments: [], text: "Message body", html: null,
     verificationCode: null, unsubscribeUrl: null
   };
+
+  it("shows the current page, total pages and filtered message total", async () => {
+    sessionStorage.setItem("imap2api-token", "valid-token");
+    const eventStream = new ReadableStream<Uint8Array>({ start() {} });
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/events")) return { ok: true, status: 200, body: eventStream } as Response;
+      const json = async () => url.endsWith("/accounts") ? [account("account-1", "first@example.com")]
+        : url.endsWith("/settings") ? { maxMessagesPerAccount: 100, pollIntervalSeconds: 10, pageSize: 100 }
+          : url.includes("/messages?") ? { items: [summary], nextCursor: url.includes("cursor=") ? null : "page-2", total: 245 }
+            : { ok: true };
+      return { ok: true, status: 200, body: null, json } as Response;
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<App />);
+    expect(await screen.findByText("第 1 / 3 页")).toBeInTheDocument();
+    expect(screen.getByText("共 245 封 · 每页 100 封")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "下一页" }));
+    expect(await screen.findByText("第 2 / 3 页")).toBeInTheDocument();
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
+      "/api/v1/messages?view=all&limit=100&cursor=page-2", expect.any(Object)
+    ));
+  });
 
   it("opens an unread message without refreshing the list and marks it as read", async () => {
     sessionStorage.setItem("imap2api-token", "valid-token");
@@ -495,6 +533,26 @@ describe("mail body isolation", () => {
     expect(hasRemoteImageReferences(html)).toBe(true);
   });
 
+  it("automatically loads remote images only for an exact whitelisted sender", () => {
+    const message: MessageDetail = {
+      id: "message-trusted", accountId: "account-1", accountEmail: "mail@example.test", subject: "Trusted images",
+      from: [{ address: "Sender@Example.test" }], to: [{ address: "mail@example.test" }], cc: [], preview: "", displayTime: "2026-01-01T00:00:00.000Z",
+      folder: "junk", read: true, hasAttachments: false, attachments: [], labels: [], forwardedVia: null,
+      verificationCode: null, unsubscribeUrl: null, text: "", html: '<img data-remote-src="https://images.example.test/a.png">'
+    };
+    expect(senderAllowsRemoteImages(message.from, [" sender@example.TEST "])).toBe(true);
+    expect(senderAllowsRemoteImages(message.from, ["other@example.test"])).toBe(false);
+    const view = render(<MessageDetailView api={detailApi} message={message} remoteImageAllowlist={[" sender@example.TEST "]} onBack={vi.fn()} onMark={vi.fn()} />);
+
+    expect((screen.getByTitle("邮件正文") as HTMLIFrameElement).srcdoc).toContain("img-src data: http: https:");
+    expect(screen.getByRole("button", { name: "图片已加载" })).toBeDisabled();
+    expect(screen.queryByText("垃圾箱")).not.toBeInTheDocument();
+
+    view.rerender(<MessageDetailView api={detailApi} message={{ ...message, id: "message-untrusted" }} remoteImageAllowlist={["other@example.test"]} onBack={vi.fn()} onMark={vi.fn()} />);
+    expect((screen.getByTitle("邮件正文") as HTMLIFrameElement).srcdoc).toContain("img-src data:;");
+    expect(screen.getByRole("button", { name: "加载图片" })).toBeEnabled();
+  });
+
   it("loads images only for the selected message and confirms body links", async () => {
     vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });
     const open = vi.spyOn(window, "open").mockReturnValue(null);
@@ -504,7 +562,7 @@ describe("mail body isolation", () => {
       folder: "inbox", read: false, hasAttachments: false, attachments: [], labels: [], forwardedVia: null, verificationCode: null, unsubscribeUrl: null, text: "",
       html: '<img data-remote-src="https://images.example.test/a.png"><a data-safe-href="https://example.test/path">Example link</a>'
     };
-    const view = render(<MessageDetailView message={message} onBack={vi.fn()} onMark={vi.fn()} />);
+    const view = render(<MessageDetailView api={detailApi} message={message} onBack={vi.fn()} onMark={vi.fn()} />);
 
     expect(screen.queryByText("收件箱")).not.toBeInTheDocument();
     const frame = screen.getByTitle("邮件正文") as HTMLIFrameElement;
@@ -525,7 +583,7 @@ describe("mail body isolation", () => {
     fireEvent.click(screen.getByRole("button", { name: "加载图片" }));
     await waitFor(() => expect(frame.srcdoc).toContain("img-src data: http: https:"));
 
-    view.rerender(<MessageDetailView message={{ ...message, id: "message-2" }} onBack={vi.fn()} onMark={vi.fn()} />);
+    view.rerender(<MessageDetailView api={detailApi} message={{ ...message, id: "message-2" }} onBack={vi.fn()} onMark={vi.fn()} />);
     expect(screen.getByRole("button", { name: "加载图片" })).toBeEnabled();
     expect((screen.getByTitle("邮件正文") as HTMLIFrameElement).srcdoc).toContain("img-src data:;");
   });
@@ -535,10 +593,10 @@ describe("mail body isolation", () => {
       id: "message-scroll", accountId: "account-1", accountEmail: "mail@example.test", subject: "Scrollable message",
       from: [{ address: "sender@example.test" }], to: [{ address: "mail@example.test" }], cc: [{ address: "copy@example.test" }], preview: "",
       displayTime: "2026-01-01T00:00:00.000Z", folder: "inbox", read: true, hasAttachments: true,
-      attachments: ["invoice.pdf"], labels: [], forwardedVia: null, verificationCode: null, unsubscribeUrl: null,
+      attachments: [{ id: "attachment-1", filename: "invoice.pdf", contentType: "application/pdf", size: 2048 }], labels: [], forwardedVia: null, verificationCode: null, unsubscribeUrl: null,
       text: "Long message body", html: null
     };
-    const view = render(<MessageDetailView message={message} onBack={vi.fn()} onMark={vi.fn()} />);
+    const view = render(<MessageDetailView api={detailApi} message={message} onBack={vi.fn()} onMark={vi.fn()} />);
     const metadata = screen.getByText("发件人").closest("dl")!.parentElement!;
     const textBody = screen.getByText("Long message body");
 
@@ -552,15 +610,66 @@ describe("mail body isolation", () => {
     fireEvent.scroll(textBody);
     expect(metadata).toHaveAttribute("aria-hidden", "false");
 
-    view.rerender(<MessageDetailView message={{ ...message, id: "message-html", text: "", html: "<p>HTML body</p>" }} onBack={vi.fn()} onMark={vi.fn()} />);
+    view.rerender(<MessageDetailView api={detailApi} message={{ ...message, id: "message-html", text: "", html: "<p>HTML body</p>" }} onBack={vi.fn()} onMark={vi.fn()} />);
     const frame = screen.getByTitle("邮件正文") as HTMLIFrameElement;
     fireEvent.load(frame);
     Object.defineProperty(frame.contentDocument!.documentElement, "scrollTop", { configurable: true, value: 40 });
     fireEvent.scroll(frame.contentDocument!);
     expect(metadata).toHaveAttribute("aria-hidden", "true");
 
-    view.rerender(<MessageDetailView message={{ ...message, id: "message-next" }} onBack={vi.fn()} onMark={vi.fn()} />);
+    view.rerender(<MessageDetailView api={detailApi} message={{ ...message, id: "message-next" }} onBack={vi.fn()} onMark={vi.fn()} />);
     expect(metadata).toHaveAttribute("aria-hidden", "false");
+  });
+
+  it("downloads, cancels and retries attachments while keeping legacy entries visible", async () => {
+    const api = new ApiClient("valid-token");
+    const downloadSignals: AbortSignal[] = [];
+    const download = vi.spyOn(api, "download")
+      .mockImplementationOnce((_path, signal) => {
+        downloadSignals.push(signal);
+        return new Promise((_resolve, reject) => signal.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), { once: true }));
+      })
+      .mockImplementationOnce(async (_path, _signal, onStarted) => {
+        onStarted?.();
+        return new Blob(["pdf-content"], { type: "application/pdf" });
+      })
+      .mockRejectedValueOnce(new Error("IMAP offline"));
+    const NativeURL = URL;
+    const createObjectURL = vi.fn(() => "blob:attachment");
+    const revokeObjectURL = vi.fn();
+    class DownloadURL extends NativeURL {}
+    Object.assign(DownloadURL, { createObjectURL, revokeObjectURL });
+    vi.stubGlobal("URL", DownloadURL);
+    const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => undefined);
+    const message: MessageDetail = {
+      id: "message-download", accountId: "account-1", accountEmail: "mail@example.test", subject: "Attachments",
+      from: [{ address: "sender@example.test" }], to: [{ address: "mail@example.test" }], cc: [], preview: "",
+      displayTime: "2026-01-01T00:00:00.000Z", folder: "inbox", read: true, hasAttachments: true,
+      attachments: [
+        { id: "attachment-1", filename: "invoice.pdf", contentType: "application/pdf", size: 2048 },
+        { id: null, filename: "legacy.txt", contentType: "application/octet-stream", size: null }
+      ], labels: [], forwardedVia: null, verificationCode: null, unsubscribeUrl: null, text: "Body", html: null
+    };
+    render(<MessageDetailView api={api} message={message} onBack={vi.fn()} onMark={vi.fn()} />);
+
+    expect(screen.getByRole("button", { name: "legacy.txt，同步后可下载" })).toBeDisabled();
+    expect(screen.getByText("2.0 KB")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "下载 invoice.pdf" }));
+    expect(await screen.findByText("等待中")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "取消下载 invoice.pdf" }));
+    expect(downloadSignals[0]?.aborted).toBe(true);
+    await waitFor(() => expect(screen.queryByText("等待中")).not.toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole("button", { name: "下载 invoice.pdf" }));
+    await waitFor(() => expect(screen.getByText("已下载")).toBeInTheDocument());
+    expect(download).toHaveBeenNthCalledWith(2, "/messages/message-download/attachments/attachment-1", expect.any(AbortSignal), expect.any(Function));
+    expect(createObjectURL).toHaveBeenCalledWith(expect.any(Blob));
+    expect(revokeObjectURL).toHaveBeenCalledWith("blob:attachment");
+    expect(click).toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "下载 invoice.pdf" }));
+    expect(await screen.findByText("失败 · 重试")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "重试下载 invoice.pdf" })).toBeEnabled();
   });
 
   it("shows labels, copies verification codes, and confirms unsubscribe links", async () => {
@@ -575,7 +684,7 @@ describe("mail body isolation", () => {
       labels: ["forwarded", "verification_code", "unsubscribe"], forwardedVia: "relay@domain-b.test",
       verificationCode: "123456", unsubscribeUrl: "https://example.test/unsubscribe"
     };
-    const view = render(<MessageDetailView message={message} onBack={vi.fn()} onMark={vi.fn()} />);
+    const view = render(<MessageDetailView api={detailApi} message={message} onBack={vi.fn()} onMark={vi.fn()} />);
 
     expect(screen.getByText("relay@domain-b.test")).toBeInTheDocument();
     expect(screen.queryByText("转发")).not.toBeInTheDocument();
@@ -612,7 +721,7 @@ describe("mail body isolation", () => {
     fireEvent.click(screen.getByRole("button", { name: "打开退订链接" }));
     expect(open).toHaveBeenCalledWith("https://example.test/unsubscribe", "_blank", "noopener,noreferrer");
 
-    view.rerender(<MessageDetailView message={{ ...message, id: "message-actions-2" }} onBack={vi.fn()} onMark={vi.fn()} />);
+    view.rerender(<MessageDetailView api={detailApi} message={{ ...message, id: "message-actions-2" }} onBack={vi.fn()} onMark={vi.fn()} />);
     expect(screen.getByRole("button", { name: "复制 123456" })).toBeInTheDocument();
     expect(screen.getByRole("status")).toHaveTextContent("");
 
@@ -620,7 +729,7 @@ describe("mail body isolation", () => {
     fireEvent.click(screen.getByRole("button", { name: "复制 123456" }));
     await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("验证码复制失败"));
 
-    view.rerender(<MessageDetailView message={{ ...message, id: "message-actions-3", read: true, unsubscribeUrl: "javascript:alert(1)" }} onBack={vi.fn()} onMark={vi.fn()} />);
+    view.rerender(<MessageDetailView api={detailApi} message={{ ...message, id: "message-actions-3", read: true, unsubscribeUrl: "javascript:alert(1)" }} onBack={vi.fn()} onMark={vi.fn()} />);
     expect(screen.getByRole("button", { name: "标记为未读" }).querySelector(".lucide-mail-open")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "退订" })).not.toBeInTheDocument();
   });
