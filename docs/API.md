@@ -6,7 +6,7 @@
 
 - API 基础地址：`http(s)://<host>:<port>/api/v1`
 - 默认本地地址：`http://localhost:3000/api/v1`
-- 数据格式：除 SSE 和 `204 No Content` 外，均为 JSON
+- 数据格式：除 SSE、`204 No Content` 和发信接口的 multipart 请求外，均为 JSON
 - 字符编码：UTF-8
 - 时间格式：带时区的 ISO 8601 字符串，例如 `2026-08-07T10:30:00.000Z`
 - 资源 ID：UUID 字符串
@@ -114,6 +114,11 @@ curl -X POST \
 | `imap.host` | `string` | 实际使用的 IMAP 主机 |
 | `imap.port` | `integer` | 实际使用的 IMAP 端口 |
 | `imap.secure` | `boolean` | 是否使用 TLS |
+| `smtp` | `object \| null` | 实际 SMTP 配置；自定义账号未配置时为 `null` |
+| `smtp.host` | `string` | SMTP 主机 |
+| `smtp.port` | `integer` | SMTP 端口 |
+| `smtp.secure` | `boolean` | `true` 为隐式 TLS，`false` 为强制 STARTTLS |
+| `defaultSenderName` | `string \| null` | 账号级默认发件人名称 |
 | `hasCredential` | `true` | 表示服务端已保存凭据，不代表返回了凭据 |
 | `status` | `ConnectionStatus` | 当前连接状态 |
 | `syncMode` | `SyncMode \| null` | 当前同步模式 |
@@ -175,11 +180,13 @@ curl -X POST \
 | `PATCH` | `/accounts/:id` | 是 | `200` | 更新账号 |
 | `DELETE` | `/accounts/:id` | 是 | `204` | 删除账号及其本地缓存 |
 | `POST` | `/accounts/:id/test` | 是 | `200` | 测试 IMAP 连接 |
+| `POST` | `/accounts/:id/smtp/test` | 是 | `200` | 测试 SMTP 连接 |
 | `POST` | `/accounts/:id/sync` | 是 | `202` | 触发同步 |
 | `GET` | `/accounts/:id/mailboxes` | 是 | `200` | 查询系统与可选自定义文件夹 |
 | `PUT` | `/accounts/:id/sync-folders` | 是 | `200` | 更新自定义同步文件夹及同步模式 |
 | `GET` | `/messages` | 是 | `200` | 分页查询邮件摘要 |
 | `GET` | `/messages/:id` | 是 | `200` | 查询邮件详情 |
+| `POST` | `/messages/send` | 是 | `200` / `207` | 通过 SMTP 发送邮件和附件 |
 | `GET` | `/messages/:id/attachments/:attachmentId` | 是 | `200` | 按需下载附件 |
 | `PATCH` | `/messages/:id/read` | 是 | `200` | 标记单封邮件已读或未读 |
 | `POST` | `/accounts/:id/messages/read-all` | 是 | `200` / `207` | 标记账号内缓存邮件全部已读 |
@@ -279,8 +286,15 @@ POST /api/v1/accounts
 | `imap.host` | `string` | 否 | 最长 255 字符；`custom` 或无法自动识别时必须可解析出主机 |
 | `imap.port` | `integer` | 否 | 1–65535，默认使用预设值或 `993` |
 | `imap.secure` | `boolean` | 否 | 默认使用预设值或 `true` |
+| `smtp` | `object \| null` | 否 | SMTP 主机、端口和安全模式；`null` 表示使用服务商预设，自定义账号为仅收信状态 |
+| `smtp.host` | `string` | 否 | 最长 255 字符；自定义 SMTP 必须提供 |
+| `smtp.port` | `integer` | 否 | 1–65535，默认使用预设值或 `465` |
+| `smtp.secure` | `boolean` | 否 | `true` 使用隐式 TLS；`false` 强制 STARTTLS |
+| `defaultSenderName` | `string \| null` | 否 | 最长 200 字符；`null` 表示继承系统设置 |
 
 已内置 `qq`、`gmail`、`icloud`、`outlook`、`qq-enterprise`、`163` 的 IMAP 预设。Gmail、iCloud、QQ、163 等邮箱通常需要应用专用密码或授权码；当前接口不支持 OAuth 登录。
+
+对应 SMTP 预设为 `smtp.qq.com:465`、`smtp.gmail.com:465`、`smtp.mail.me.com:587`、`smtp-mail.outlook.com:587`、`smtp.exmail.qq.com:465` 和 `smtp.163.com:465`。587 端口配置强制 STARTTLS，不允许明文降级。
 
 自动识别示例：
 
@@ -375,6 +389,16 @@ POST /api/v1/accounts/:id/test
 
 - `404 ACCOUNT_NOT_FOUND`
 - `502 IMAP_CONNECTION_FAILED`
+
+### 5.5.1 测试 SMTP 连接
+
+```http
+POST /api/v1/accounts/:id/smtp/test
+```
+
+接口使用账号主邮箱和现有授权码调用 Nodemailer `verify()`，不会发送实际邮件。成功返回 `{ "ok": true }`。
+
+可能的业务错误：`400 SMTP_NOT_CONFIGURED`、`404 ACCOUNT_NOT_FOUND`、`502 SMTP_CONNECTION_FAILED`。
 
 ### 5.6 触发同步
 
@@ -670,6 +694,48 @@ Content-Type: application/json
 - `404 ACCOUNT_NOT_FOUND`
 - `502 IMAP_UPDATE_FAILED`：连接级失败导致无法处理任何文件夹 |
 
+### 6.6 发送邮件
+
+```http
+POST /api/v1/messages/send
+Content-Type: multipart/form-data; boundary=<generated-boundary>
+```
+
+请求必须包含一个名为 `message` 的文本字段，其值为 JSON；每个附件使用同名 `attachments` 文件字段：
+
+```json
+{
+  "accountId": "5f3deca8-7aa3-489a-bcf5-03ca02fb7474",
+  "fromAddress": "alias@example.com",
+  "senderName": "Operations",
+  "to": ["recipient@example.com"],
+  "cc": [],
+  "bcc": [],
+  "subject": "Status report",
+  "html": "<p>Report attached.</p>"
+}
+```
+
+- `fromAddress` 必须是账号主邮箱或已配置别名；SMTP 登录始终使用主邮箱和账号授权码。
+- 发件人名称按请求值、账号默认值、系统默认值的顺序解析。
+- 收件人合计至少 1 个、最多 100 个；主题最长 998 字符，HTML 最长 1 MiB。
+- 最多 20 个附件；单件及总大小均不能超过 `maxAttachmentSizeMb`。附件仅在请求期间临时保存，结束后清理。
+- HTML 仅保留基础段落、粗体、斜体、下划线、列表和安全链接，并同时生成纯文本正文。
+
+完整成功返回 `200 OK`，部分收件人被拒绝返回 `207 Multi-Status`：
+
+```json
+{
+  "messageId": "<message-id@example.com>",
+  "accepted": ["recipient@example.com"],
+  "rejected": []
+}
+```
+
+调用方必须检查 `rejected`。服务端不保存草稿、发信历史或“已发送”副本。
+
+可能的业务错误：`400 VALIDATION_ERROR`、`400 SMTP_NOT_CONFIGURED`、`404 ACCOUNT_NOT_FOUND`、`413 ATTACHMENT_TOO_LARGE`、`413 ATTACHMENT_TOTAL_TOO_LARGE`、`502 SMTP_RECIPIENTS_REJECTED`、`502 SMTP_SEND_FAILED`。
+
 ## 7. 设置接口
 
 ### 7.1 查询设置
@@ -689,7 +755,8 @@ GET /api/v1/settings
   "pageSize": 100,
   "maxConcurrentDownloads": 3,
   "maxAttachmentSizeMb": 100,
-  "remoteImageAllowlist": []
+  "remoteImageAllowlist": [],
+  "defaultSenderName": ""
 }
 ```
 
@@ -699,8 +766,9 @@ GET /api/v1/settings
 | `pollIntervalSeconds` | `integer` | 5–3600 | 不支持 IDLE 的会话轮询间隔；支持 IDLE 的会话不按此间隔轮询 |
 | `pageSize` | `integer` | 10–100 | 管理端邮件列表每页加载的邮件数量 |
 | `maxConcurrentDownloads` | `integer` | 1–10 | 单进程内所有账号共享的附件并发下载上限 |
-| `maxAttachmentSizeMb` | `integer` | 1–1024 | 单附件下载大小上限，1 MB 按 1024 × 1024 字节计算 |
+| `maxAttachmentSizeMb` | `integer` | 1–1024 | 单附件下载、发信单附件及单次发信附件总量上限 |
 | `remoteImageAllowlist` | `string[]` | 最多 200 项 | 打开邮件时允许自动加载远程图片的完整发件人邮箱地址 |
+| `defaultSenderName` | `string` | 最多 200 字符 | 系统默认发件人名称；空字符串表示不设置 |
 
 ### 7.2 修改设置
 
@@ -716,7 +784,8 @@ PATCH /api/v1/settings
   "pollIntervalSeconds": 30,
   "pageSize": 60,
   "maxConcurrentDownloads": 4,
-  "maxAttachmentSizeMb": 200
+  "maxAttachmentSizeMb": 200,
+  "defaultSenderName": "Operations"
 }
 ```
 
@@ -881,11 +950,16 @@ data: {"accountId":"5f3deca8-7aa3-489a-bcf5-03ca02fb7474","status":"connected","
 | `409` | `ACCOUNT_EXISTS` | 相同主邮箱账号已存在 |
 | `410` | `ATTACHMENT_STALE` | 远端邮箱已重建，附件引用失效 |
 | `413` | `ATTACHMENT_TOO_LARGE` | 附件超过系统设置的大小上限 |
+| `413` | `ATTACHMENT_TOTAL_TOO_LARGE` | 单次发信附件总量超过系统设置的大小上限 |
 | `429` | `DOWNLOAD_QUEUE_FULL` | 附件下载等待队列已满 |
 | `429` | `DOWNLOAD_QUEUE_TIMEOUT` | 附件下载排队超过 30 秒 |
 | `502` | `IMAP_CONNECTION_FAILED` | IMAP 连接测试失败 |
 | `502` | `IMAP_DOWNLOAD_FAILED` | 远端附件下载失败 |
 | `502` | `IMAP_UPDATE_FAILED` | 远端 IMAP 已读写操作失败 |
+| `400` | `SMTP_NOT_CONFIGURED` | 账号未配置可用的 SMTP 主机 |
+| `502` | `SMTP_CONNECTION_FAILED` | SMTP 连接测试失败 |
+| `502` | `SMTP_RECIPIENTS_REJECTED` | SMTP 服务器拒绝全部收件人 |
+| `502` | `SMTP_SEND_FAILED` | SMTP 投递失败 |
 | `500` | `INTERNAL_ERROR` | 未处理的服务端错误 |
 
 调用建议：
@@ -894,7 +968,7 @@ data: {"accountId":"5f3deca8-7aa3-489a-bcf5-03ca02fb7474","status":"connected","
 - `401` 不应自动无限重试，应要求重新配置 Token。
 - `502` 表示远端邮箱或网络失败，可做有限次数退避重试。
 - `500` 不会返回堆栈、SQLite 错误、凭据或内部路径。
-- `207` 不是错误结构，应按“部分成功”解析 `count` 和 `failedFolders`。
+- `207` 不是错误结构；批量已读检查 `failedFolders`，发信检查 `rejected`。
 
 ## 10. 集成边界与注意事项
 

@@ -33,6 +33,20 @@ export class ApiClient {
     return response.blob();
   }
 
+  async requestMultipart<T>(path: string, body: FormData, signal?: AbortSignal): Promise<T> {
+    const response = await fetch(`/api/v1${path}`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${this.token}` },
+      body,
+      signal
+    });
+    if (!response.ok && response.status !== 207) {
+      const payload = await response.json().catch(() => null) as ApiError | null;
+      throw new Error(payload?.error.message ?? `请求失败 (${response.status})`);
+    }
+    return response.json() as Promise<T>;
+  }
+
   async subscribe(onEvent: (event: ServerEvent) => void, signal: AbortSignal, accountId?: string): Promise<void> {
     const query = accountId ? `?accountId=${encodeURIComponent(accountId)}` : "";
     const response = await fetch(`/api/v1/events${query}`, {

@@ -16,11 +16,12 @@ import type {
   MessageSummary,
   MessageView,
   Settings,
+  SmtpConfig,
   SyncFolderConfig,
   SyncMode
 } from "@imap2api/shared";
 import { CryptoService } from "./crypto.js";
-import { resolveImapConfig, type ResolvedImapConfig } from "./providers.js";
+import { resolveImapConfig, resolveSmtpConfig, type ResolvedImapConfig } from "./providers.js";
 import { InputError } from "./errors.js";
 import { classifyMail, type ForwardedViaResult, type ForwardedViaSource, type MailClassificationResult } from "./mail-classifier.js";
 
@@ -29,11 +30,15 @@ interface AccountConfigPayload {
   aliases?: string[];
   imap: ResolvedImapConfig;
   syncFolders?: SyncFolderConfig[];
+  smtp?: SmtpConfig | null;
+  defaultSenderName?: string | null;
 }
 
-export interface StoredAccount extends Omit<AccountConfigPayload, "aliases"> {
+export interface StoredAccount extends Omit<AccountConfigPayload, "aliases" | "smtp" | "defaultSenderName"> {
   id: string;
   aliases: string[];
+  smtp: Required<SmtpConfig> | null;
+  defaultSenderName: string | null;
   syncFolders: SyncFolderConfig[];
   password: string;
   status: ConnectionStatus;
@@ -118,6 +123,7 @@ interface SettingsRow {
   maxConcurrentDownloads: number;
   maxAttachmentSizeMb: number;
   remoteImageAllowlistEnc: Buffer | null;
+  defaultSenderNameEnc: Buffer | null;
 }
 
 const SCHEMA = `
@@ -132,7 +138,8 @@ CREATE TABLE IF NOT EXISTS settings (
   page_size INTEGER NOT NULL DEFAULT 100 CHECK (page_size BETWEEN 10 AND 100),
   max_concurrent_downloads INTEGER NOT NULL DEFAULT 3 CHECK (max_concurrent_downloads BETWEEN 1 AND 10),
   max_attachment_size_mb INTEGER NOT NULL DEFAULT 100 CHECK (max_attachment_size_mb BETWEEN 1 AND 1024),
-  remote_image_allowlist_enc BLOB
+  remote_image_allowlist_enc BLOB,
+  default_sender_name_enc BLOB
 );
 CREATE TABLE IF NOT EXISTS accounts (
   id TEXT PRIMARY KEY,
@@ -212,8 +219,8 @@ export class AppDatabase {
     this.migrate();
     this.raw.prepare(`INSERT OR IGNORE INTO settings(
       id, max_messages_per_account, poll_interval_seconds, page_size,
-      max_concurrent_downloads, max_attachment_size_mb, remote_image_allowlist_enc
-    ) VALUES (1, 100, ?, 100, 3, 100, NULL)`)
+      max_concurrent_downloads, max_attachment_size_mb, remote_image_allowlist_enc, default_sender_name_enc
+    ) VALUES (1, 100, ?, 100, 3, 100, NULL, NULL)`)
       .run(initialPollIntervalSeconds);
   }
 
@@ -225,7 +232,8 @@ export class AppDatabase {
     const row = this.raw.prepare(`SELECT max_messages_per_account AS maxMessagesPerAccount,
       poll_interval_seconds AS pollIntervalSeconds, page_size AS pageSize,
       max_concurrent_downloads AS maxConcurrentDownloads, max_attachment_size_mb AS maxAttachmentSizeMb,
-      remote_image_allowlist_enc AS remoteImageAllowlistEnc FROM settings WHERE id = 1`).get() as SettingsRow;
+      remote_image_allowlist_enc AS remoteImageAllowlistEnc,
+      default_sender_name_enc AS defaultSenderNameEnc FROM settings WHERE id = 1`).get() as SettingsRow;
     return {
       maxMessagesPerAccount: row.maxMessagesPerAccount,
       pollIntervalSeconds: row.pollIntervalSeconds,
@@ -234,7 +242,10 @@ export class AppDatabase {
       maxAttachmentSizeMb: row.maxAttachmentSizeMb,
       remoteImageAllowlist: row.remoteImageAllowlistEnc
         ? this.crypto.decrypt<string[]>(asBuffer(row.remoteImageAllowlistEnc))
-        : []
+        : [],
+      defaultSenderName: row.defaultSenderNameEnc
+        ? this.crypto.decrypt<string>(asBuffer(row.defaultSenderNameEnc))
+        : ""
     };
   }
 
@@ -249,9 +260,11 @@ export class AppDatabase {
           : current.remoteImageAllowlist
       };
       this.raw.prepare(`UPDATE settings SET max_messages_per_account = ?, poll_interval_seconds = ?, page_size = ?,
-        max_concurrent_downloads = ?, max_attachment_size_mb = ?, remote_image_allowlist_enc = ? WHERE id = 1`)
+        max_concurrent_downloads = ?, max_attachment_size_mb = ?, remote_image_allowlist_enc = ?,
+        default_sender_name_enc = ? WHERE id = 1`)
         .run(next.maxMessagesPerAccount, next.pollIntervalSeconds, next.pageSize, next.maxConcurrentDownloads,
-          next.maxAttachmentSizeMb, this.crypto.encrypt(next.remoteImageAllowlist));
+          next.maxAttachmentSizeMb, this.crypto.encrypt(next.remoteImageAllowlist),
+          next.defaultSenderName ? this.crypto.encrypt(next.defaultSenderName.trim()) : null);
       const deleted: Array<{ accountId: string; folder: "inbox" | "junk"; ids: string[] }> = [];
       if (next.maxMessagesPerAccount !== current.maxMessagesPerAccount) {
         for (const { id } of this.raw.prepare("SELECT id FROM accounts").all() as Array<{ id: string }>) {
@@ -289,12 +302,15 @@ export class AppDatabase {
     const row = this.raw.prepare("SELECT * FROM accounts WHERE id = ?").get(id) as AccountRow | undefined;
     if (!row) return null;
     const config = this.crypto.decrypt<AccountConfigPayload>(asBuffer(row.config_enc));
+    const smtp = resolveSmtpConfig(config.imap.provider, config.smtp);
     return {
       id: row.id,
       email: config.email,
       aliases: config.aliases ?? [],
       syncFolders: config.syncFolders ?? [],
       imap: config.imap,
+      smtp,
+      defaultSenderName: config.defaultSenderName?.trim() || null,
       password: this.crypto.decrypt<string>(asBuffer(row.credential_enc)),
       status: row.status,
       syncMode: row.sync_mode,
@@ -309,11 +325,13 @@ export class AppDatabase {
     const email = input.email.trim().toLowerCase();
     const aliases = normalizeAliases(email, input.aliases ?? []);
     const imap = resolveImapConfig(email, input.imap);
+    const smtp = resolveSmtpConfig(imap.provider, input.smtp);
+    const defaultSenderName = input.defaultSenderName?.trim() || null;
     const sortOrder = (this.raw.prepare("SELECT COALESCE(MAX(sort_order), -1) + 1 AS value FROM accounts").get() as { value: number }).value;
     this.raw.prepare(`
       INSERT INTO accounts(id, email_hash, config_enc, credential_enc, status, sort_order, created_at, updated_at)
       VALUES (?, ?, ?, ?, 'pending', ?, ?, ?)
-    `).run(id, this.crypto.fingerprint(email), this.crypto.encrypt({ email, aliases, imap, syncFolders: [] }), this.crypto.encrypt(input.password), sortOrder, now, now);
+    `).run(id, this.crypto.fingerprint(email), this.crypto.encrypt({ email, aliases, imap, smtp, defaultSenderName, syncFolders: [] }), this.crypto.encrypt(input.password), sortOrder, now, now);
     return this.toPublicAccount(this.selectPublicAccount(id));
   }
 
@@ -323,14 +341,25 @@ export class AppDatabase {
     const email = (input.email ?? current.email).trim().toLowerCase();
     const aliases = normalizeAliases(email, input.aliases ?? current.aliases);
     const imap = resolveImapConfig(email, input.imap ?? current.imap);
+    const providerChanged = imap.provider !== current.imap.provider;
+    const smtp = resolveSmtpConfig(imap.provider, input.smtp === undefined ? (providerChanged ? null : current.smtp) : input.smtp);
+    const defaultSenderName = input.defaultSenderName === undefined
+      ? current.defaultSenderName
+      : input.defaultSenderName?.trim() || null;
     const now = new Date().toISOString();
     const credential = input.password ? this.crypto.encrypt(input.password) : this.crypto.encrypt(current.password);
-    this.raw.prepare(`
-      UPDATE accounts SET email_hash = ?, config_enc = ?, credential_enc = ?, status = 'pending',
-        sync_mode = NULL, error_enc = NULL, updated_at = ? WHERE id = ?
-    `).run(this.crypto.fingerprint(email), this.crypto.encrypt({
-      email, aliases, imap, syncFolders: current.syncFolders
-    }), credential, now, id);
+    const encryptedConfig = this.crypto.encrypt({
+      email, aliases, imap, smtp, defaultSenderName, syncFolders: current.syncFolders
+    });
+    if (input.email !== undefined || input.password !== undefined || input.imap !== undefined) {
+      this.raw.prepare(`
+        UPDATE accounts SET email_hash = ?, config_enc = ?, credential_enc = ?, status = 'pending',
+          sync_mode = NULL, error_enc = NULL, updated_at = ? WHERE id = ?
+      `).run(this.crypto.fingerprint(email), encryptedConfig, credential, now, id);
+    } else {
+      this.raw.prepare("UPDATE accounts SET email_hash = ?, config_enc = ?, credential_enc = ?, updated_at = ? WHERE id = ?")
+        .run(this.crypto.fingerprint(email), encryptedConfig, credential, now, id);
+    }
     return this.toPublicAccount(this.selectPublicAccount(id));
   }
 
@@ -643,8 +672,10 @@ export class AppDatabase {
 
   private toPublicAccount(row: AccountRow | PublicAccountRow): Account {
     const config = this.crypto.decrypt<AccountConfigPayload>(asBuffer(row.config_enc));
+    const smtp = resolveSmtpConfig(config.imap.provider, config.smtp);
     return {
       id: row.id, email: config.email, aliases: config.aliases ?? [], provider: config.imap.provider, imap: config.imap,
+      smtp, defaultSenderName: config.defaultSenderName?.trim() || null,
       hasCredential: true, status: row.status, syncMode: row.sync_mode,
       messageCount: "message_count" in row ? row.message_count : 0,
       unreadCount: "unread_count" in row ? row.unread_count : 0,
@@ -695,6 +726,9 @@ export class AppDatabase {
     if (!settingsColumns.has("remote_image_allowlist_enc")) {
       this.raw.exec("ALTER TABLE settings ADD COLUMN remote_image_allowlist_enc BLOB");
     }
+    if (!settingsColumns.has("default_sender_name_enc")) {
+      this.raw.exec("ALTER TABLE settings ADD COLUMN default_sender_name_enc BLOB");
+    }
     const accountColumns = new Set((this.raw.pragma("table_info(accounts)") as Array<{ name: string }>).map((column) => column.name));
     if (!accountColumns.has("sync_mode")) {
       this.raw.exec("ALTER TABLE accounts ADD COLUMN sync_mode TEXT CHECK (sync_mode IS NULL OR sync_mode IN ('idle', 'polling'))");
@@ -707,7 +741,7 @@ export class AppDatabase {
     }
     const messageColumns = new Set((this.raw.pragma("table_info(messages)") as Array<{ name: string }>).map((column) => column.name));
     if (!messageColumns.has("mailbox_key")) this.migrateMailboxSchema();
-    this.raw.pragma("user_version = 7");
+    this.raw.pragma("user_version = 8");
   }
 
   private migrateMailboxSchema(): void {

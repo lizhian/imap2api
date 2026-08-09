@@ -8,6 +8,7 @@
 - 全部、未读、垃圾箱邮件列表及安全正文查看
 - 单封已读/未读和当前账号缓存邮件全部已读
 - QQ、Gmail、iCloud、Outlook、QQ 企业邮箱、163 邮箱预设
+- 使用 Nodemailer 和 SMTP 从主邮箱或别名发送富文本邮件及附件
 - AES-256-GCM 加密邮箱凭据及邮件内容
 - 附件按需从 IMAP 流式下载，不保存附件内容
 
@@ -98,11 +99,13 @@ curl -H "Authorization: Bearer $IMAP2API_TOKEN" \
 | `GET/POST` | `/api/v1/accounts` | 查询或新增账号 |
 | `PATCH/DELETE` | `/api/v1/accounts/:id` | 更新或删除账号 |
 | `POST` | `/api/v1/accounts/:id/test` | 测试 IMAP 连接 |
+| `POST` | `/api/v1/accounts/:id/smtp/test` | 测试 SMTP 连接 |
 | `POST` | `/api/v1/accounts/:id/sync` | 触发同步 |
 | `GET` | `/api/v1/accounts/:id/mailboxes` | 查询可同步文件夹 |
 | `PUT` | `/api/v1/accounts/:id/sync-folders` | 配置自定义同步文件夹及模式 |
 | `GET` | `/api/v1/messages` | 查询邮件列表 |
 | `GET` | `/api/v1/messages/:id` | 查询邮件详情 |
+| `POST` | `/api/v1/messages/send` | 通过 SMTP 发送邮件和附件 |
 | `GET` | `/api/v1/messages/:id/attachments/:attachmentId` | 按需下载附件 |
 | `PATCH` | `/api/v1/messages/:id/read` | 标记已读或未读 |
 | `POST` | `/api/v1/accounts/:id/messages/read-all` | 当前账号缓存全部已读 |
@@ -120,7 +123,7 @@ curl -N -H "Authorization: Bearer $IMAP2API_TOKEN" \
 
 ## 邮箱授权说明
 
-Gmail、iCloud、QQ、163 等服务通常要求先开启 IMAP，并使用应用专用密码或授权码。当前版本使用密码式 IMAP 登录，不支持 OAuth。QQ 企业邮箱或其他自定义域名可以在账号表单中选择服务商预设，或展开高级设置填写 IMAP 主机。
+Gmail、iCloud、QQ、163 等服务通常要求先开启 IMAP/SMTP，并使用应用专用密码或授权码。当前版本使用密码式 IMAP/SMTP 登录，不支持 OAuth；SMTP 始终复用账号主邮箱和现有授权码。QQ 企业邮箱或其他自定义域名可以在账号表单中选择服务商预设，或展开高级设置填写 IMAP 和 SMTP 主机。
 
 ## 安全边界
 
@@ -129,6 +132,7 @@ Gmail、iCloud、QQ、163 等服务通常要求先开启 IMAP，并使用应用�
 - 时间、UID、文件夹类型、已读状态等查询索引保持明文；真实 IMAP 文件夹路径加密存储，仅保留不可逆索引。
 - 邮件 HTML 会保留常见排版和内联样式，移除脚本、表单、事件属性及可执行内容，并在不允许脚本、弹窗和顶层导航的受限 iframe 中展示。远程图片默认阻止，用户可为当前邮件单独加载；安全且受大小限制的 CID 内嵌图片会本地化显示。正文链接由父页面拦截，确认目标地址后才在新标签打开。
 - 除受限的 CID 正文图片外，附件内容不写入 SQLite 或本地文件系统；下载时使用独立 IMAP 连接按 MIME part 流式读取，并受全局并发和单附件大小设置限制。
+- 发信附件仅在请求期间写入随机临时目录，SMTP 操作结束后立即清理；系统不保存草稿、发信历史或“已发送”副本。
 
 ## License
 

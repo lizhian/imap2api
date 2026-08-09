@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable } from "node:stream";
@@ -9,6 +9,8 @@ import { EventBroker } from "./events.js";
 import { ImapService } from "./imap.js";
 import { AppDatabase } from "./database.js";
 import { HttpError } from "./errors.js";
+import { SmtpCancelledError, SmtpService } from "./smtp.js";
+import FormData from "form-data";
 
 const dirs: string[] = [];
 const token = "api-test-token-that-is-at-least-32-characters";
@@ -74,7 +76,7 @@ describe("HTTP API", () => {
     } });
     expect(updated.json()).toEqual({
       maxMessagesPerAccount: 100, pollIntervalSeconds: 25, pageSize: 100, maxConcurrentDownloads: 4, maxAttachmentSizeMb: 200,
-      remoteImageAllowlist: ["trusted@example.com", "images@example.com"]
+      remoteImageAllowlist: ["trusted@example.com", "images@example.com"], defaultSenderName: ""
     });
     expect(applySettings).toHaveBeenCalledWith(10);
     await app.close();
@@ -107,6 +109,91 @@ describe("HTTP API", () => {
     expect(tooLarge.statusCode).toBe(413);
     expect(tooLarge.json()).toMatchObject({ error: { code: "ATTACHMENT_TOO_LARGE" } });
     await app.close();
+  });
+
+  it("tests SMTP and sends multipart mail with temporary attachments", async () => {
+    const testSmtp = vi.spyOn(SmtpService.prototype, "test").mockResolvedValue();
+    let uploadedPath = "";
+    const send = vi.spyOn(SmtpService.prototype, "send").mockImplementation(async (_input, attachments) => {
+      uploadedPath = attachments[0]!.path;
+      expect(existsSync(uploadedPath)).toBe(true);
+      expect(attachments[0]).toMatchObject({ filename: "report.pdf", contentType: "application/pdf" });
+      return { messageId: "smtp-message", accepted: ["ok@example.com"], rejected: ["bad@example.com"] };
+    });
+    const app = await buildApp(config());
+    const created = await app.inject({
+      method: "POST", url: "/api/v1/accounts", headers: { authorization: `Bearer ${token}` },
+      payload: { email: "sender@gmail.com", password: "app-password", aliases: ["alias@gmail.com"], defaultSenderName: "Sender" }
+    });
+    const account = created.json();
+    expect(account).toMatchObject({
+      smtp: { host: "smtp.gmail.com", port: 465, secure: true }, defaultSenderName: "Sender"
+    });
+
+    const verified = await app.inject({
+      method: "POST", url: `/api/v1/accounts/${account.id}/smtp/test`, headers: { authorization: `Bearer ${token}` }
+    });
+    expect(verified.statusCode).toBe(200);
+    expect(testSmtp).toHaveBeenCalledWith(account.id);
+
+    const form = new FormData();
+    form.append("message", JSON.stringify({
+      accountId: account.id, fromAddress: "alias@gmail.com", to: ["ok@example.com", "bad@example.com"],
+      subject: "Report", html: "<p>Attached</p>"
+    }));
+    form.append("attachments", Buffer.from("pdf"), { filename: "report.pdf", contentType: "application/pdf" });
+    const response = await app.inject({
+      method: "POST", url: "/api/v1/messages/send",
+      headers: { authorization: `Bearer ${token}`, ...form.getHeaders() }, payload: form
+    });
+    expect(response.statusCode).toBe(207);
+    expect(response.json()).toEqual({ messageId: "smtp-message", accepted: ["ok@example.com"], rejected: ["bad@example.com"] });
+    expect(send).toHaveBeenCalledWith(expect.objectContaining({ accountId: account.id, fromAddress: "alias@gmail.com" }), expect.any(Array), expect.any(AbortSignal));
+    await vi.waitFor(() => expect(existsSync(uploadedPath)).toBe(false));
+    await app.close();
+  });
+
+  it("cancels SMTP and removes temporary attachments when the client disconnects", async () => {
+    const appConfig = config();
+    const db = new AppDatabase(appConfig.databasePath, token);
+    const account = db.createAccount({ email: "sender@gmail.com", password: "app-password" });
+    const events = new EventBroker();
+    const imap = new ImapService(db, events);
+    vi.spyOn(imap, "start").mockImplementation(() => undefined);
+    const smtp = new SmtpService(db);
+    let uploadedPath = "";
+    let markStarted: (() => void) | null = null;
+    const started = new Promise<void>((resolve) => { markStarted = resolve; });
+    vi.spyOn(smtp, "send").mockImplementation(async (_input, attachments, signal) => {
+      uploadedPath = attachments[0]!.path;
+      expect(existsSync(uploadedPath)).toBe(true);
+      markStarted?.();
+      await new Promise<void>((_resolve, reject) => {
+        const cancel = () => reject(new SmtpCancelledError());
+        if (signal?.aborted) cancel();
+        else signal?.addEventListener("abort", cancel, { once: true });
+      });
+      throw new Error("unreachable");
+    });
+    const app = await buildApp(appConfig, { db, events, imap, smtp });
+    const address = await app.listen({ host: "127.0.0.1", port: 0 });
+    const form = new globalThis.FormData();
+    form.append("message", JSON.stringify({
+      accountId: account.id, fromAddress: account.email, to: ["recipient@example.com"], subject: "", html: "<p>Body</p>"
+    }));
+    form.append("attachments", new Blob(["attachment"]), "report.txt");
+    const controller = new AbortController();
+    const request = fetch(`${address}/api/v1/messages/send`, {
+      method: "POST", headers: { authorization: `Bearer ${token}` }, body: form, signal: controller.signal
+    }).catch((error: unknown) => error);
+
+    await started;
+    controller.abort();
+    await request;
+
+    await vi.waitFor(() => expect(existsSync(uploadedPath)).toBe(false));
+    await app.close();
+    db.close();
   });
 
   it("authenticates SSE, filters events by account, and cleans up disconnected subscribers", async () => {

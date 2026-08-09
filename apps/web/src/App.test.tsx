@@ -31,8 +31,8 @@ describe("App authentication", () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       const json = async () => url.endsWith("/accounts") ? [{
-        id: "11111111-1111-4111-8111-111111111111", email: "mail@qq.com", aliases: ["alias@qq.com"], provider: "qq",
-        imap: { host: "imap.qq.com", port: 993, secure: true }, hasCredential: true,
+        id: "11111111-1111-4111-8111-111111111111", email: "mail@qq.com", aliases: ["alias@qq.com"], provider: "custom",
+        imap: { host: "imap.custom.test", port: 993, secure: true }, smtp: { host: "smtp.custom.test", port: 465, secure: true }, hasCredential: true,
         status: "connected", syncMode: "idle", messageCount: 18, unreadCount: 3, lastSyncedAt: "2026-08-07T00:00:00.000Z",
         lastError: null, createdAt: "2026-08-07T00:00:00.000Z", updatedAt: "2026-08-07T00:00:00.000Z"
       }] : url.endsWith("/settings") ? { maxMessagesPerAccount: 100, pollIntervalSeconds: 10, pageSize: 100 } : { ok: true };
@@ -52,10 +52,15 @@ describe("App authentication", () => {
     fireEvent.change(await screen.findByLabelText("别名邮箱"), { target: { value: "second@qq.com" } });
     fireEvent.click(screen.getByRole("button", { name: "添加别名" }));
     fireEvent.click(screen.getByRole("button", { name: "移除别名 alias@qq.com" }));
+    fireEvent.keyDown(screen.getByRole("combobox", { name: "邮箱服务商" }), { key: "ArrowDown" });
+    fireEvent.click(await screen.findByRole("option", { name: "Gmail" }));
     fireEvent.click(screen.getByRole("button", { name: "保存账号" }));
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(expect.stringMatching(/\/accounts\//), expect.objectContaining({
       method: "PATCH", body: expect.stringContaining('"aliases":["second@qq.com"]')
     })));
+    const update = fetchMock.mock.calls.find(([, init]) => init?.method === "PATCH")?.[1] as RequestInit;
+    expect(JSON.parse(String(update.body))).toMatchObject({ aliases: ["second@qq.com"], imap: { provider: "gmail" } });
+    expect(JSON.parse(String(update.body))).not.toHaveProperty("smtp");
   });
 
   it("uses sidebar account tabs to filter the message list", async () => {
@@ -223,7 +228,7 @@ describe("App authentication", () => {
         return { ok: true, status: 200, body: null, json: async () => JSON.parse(String(init.body)) } as Response;
       }
       const json = async () => url.endsWith("/settings")
-        ? { maxMessagesPerAccount: 100, pollIntervalSeconds: 10, pageSize: 100, maxConcurrentDownloads: 3, maxAttachmentSizeMb: 100, remoteImageAllowlist: ["images@example.com"] }
+        ? { maxMessagesPerAccount: 100, pollIntervalSeconds: 10, pageSize: 100, maxConcurrentDownloads: 3, maxAttachmentSizeMb: 100, remoteImageAllowlist: ["images@example.com"], defaultSenderName: "System Sender" }
         : url.endsWith("/accounts") ? [] : { ok: true };
       return { ok: true, status: 200, body: null, json } as Response;
     });
@@ -236,6 +241,7 @@ describe("App authentication", () => {
     const maxConcurrentDownloads = screen.getByLabelText("附件并发下载");
     const maxAttachmentSize = screen.getByLabelText("单附件大小上限");
     const remoteImageSender = screen.getByLabelText("自动加载图片发件人");
+    const defaultSenderName = screen.getByLabelText("默认发件人名称");
     expect(screen.getByText("images@example.com")).toBeInTheDocument();
     fireEvent.change(max, { target: { value: "80" } });
     fireEvent.change(interval, { target: { value: "25" } });
@@ -243,15 +249,136 @@ describe("App authentication", () => {
     fireEvent.change(maxConcurrentDownloads, { target: { value: "4" } });
     fireEvent.change(maxAttachmentSize, { target: { value: "200" } });
     fireEvent.change(remoteImageSender, { target: { value: "Trusted@Example.com" } });
+    fireEvent.change(defaultSenderName, { target: { value: "Operations" } });
     fireEvent.click(screen.getByRole("button", { name: "移除图片白名单 images@example.com" }));
     fireEvent.click(screen.getByRole("button", { name: "保存设置" }));
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/v1/settings", expect.objectContaining({
       method: "PATCH", body: JSON.stringify({
         maxMessagesPerAccount: 80, pollIntervalSeconds: 25, pageSize: 60, maxConcurrentDownloads: 4, maxAttachmentSizeMb: 200,
-        remoteImageAllowlist: ["trusted@example.com"]
+        remoteImageAllowlist: ["trusted@example.com"], defaultSenderName: "Operations"
       })
     })));
+  });
+
+  it("composes rich mail with an alias and multipart attachments", async () => {
+    location.hash = "compose";
+    sessionStorage.setItem("imap2api-token", "valid-token");
+    const account = {
+      id: "11111111-1111-4111-8111-111111111111", email: "sender@gmail.com", aliases: ["alias@gmail.com"], provider: "gmail",
+      imap: { host: "imap.gmail.com", port: 993, secure: true }, smtp: { host: "smtp.gmail.com", port: 465, secure: true },
+      defaultSenderName: "Account Sender", hasCredential: true, status: "connected", syncMode: "idle", messageCount: 0, unreadCount: 0,
+      syncFolderCount: 0, lastSyncedAt: null, lastError: null, createdAt: "2026-08-07T00:00:00.000Z", updatedAt: "2026-08-07T00:00:00.000Z"
+    };
+    const systemNameAccount = {
+      ...account,
+      id: "22222222-2222-4222-8222-222222222222", email: "other@gmail.com", aliases: [], defaultSenderName: null
+    };
+    const eventStream = new ReadableStream<Uint8Array>({ start() {} });
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/events")) return { ok: true, status: 200, body: eventStream } as Response;
+      if (url.endsWith("/messages/send")) return {
+        ok: true, status: 200, body: null, json: async () => ({ messageId: "sent", accepted: ["to@example.com"], rejected: [] })
+      } as Response;
+      const json = async () => url.endsWith("/accounts") ? [account, systemNameAccount]
+        : url.endsWith("/settings") ? { maxMessagesPerAccount: 100, pollIntervalSeconds: 10, pageSize: 100, maxConcurrentDownloads: 3, maxAttachmentSizeMb: 25, remoteImageAllowlist: [], defaultSenderName: "System Sender" }
+          : { ok: true };
+      return { ok: true, status: 200, body: null, json } as Response;
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<App />);
+    expect(await screen.findByRole("heading", { name: "写信" })).toBeInTheDocument();
+    expect(screen.getByLabelText("发件人名称")).toHaveValue("Account Sender");
+    expect(screen.getByRole("group", { name: "发件人" })).toHaveTextContent("Account Sendersender@gmail.com");
+    expect(screen.getByLabelText("发件人名称").compareDocumentPosition(screen.getByRole("listbox", { name: "发件人邮箱" })) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.getAllByRole("option").map((option) => option.textContent)).toEqual(["sender@gmail.com", "alias@gmail.com", "other@gmail.com"]);
+    expect(screen.queryByRole("textbox", { name: "抄送" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("textbox", { name: "密送" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "抄送" }));
+    fireEvent.click(screen.getByRole("button", { name: "密送" }));
+    expect(screen.getByRole("textbox", { name: "抄送" })).toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "密送" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "项目列表" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "项目列表" })).toHaveAttribute("aria-pressed", "true"));
+    fireEvent.change(screen.getByLabelText("发件人名称"), { target: { value: "Temporary Sender" } });
+    expect(screen.getByRole("group", { name: "发件人" })).toHaveTextContent("Temporary Sendersender@gmail.com");
+    fireEvent.click(screen.getByRole("option", { name: "other@gmail.com" }));
+    await waitFor(() => expect(screen.getByLabelText("发件人名称")).toHaveValue("System Sender"));
+    expect(screen.getByRole("group", { name: "发件人" })).toHaveTextContent("System Senderother@gmail.com");
+    fireEvent.click(screen.getByRole("option", { name: "alias@gmail.com" }));
+    await waitFor(() => expect(screen.getByLabelText("发件人名称")).toHaveValue("Account Sender"));
+    expect(screen.getByRole("group", { name: "发件人" })).toHaveTextContent("Account Senderalias@gmail.com");
+    const toInput = screen.getByLabelText("收件人");
+    fireEvent.change(toInput, { target: { value: "to@example.com,move@example.com,remove@example.com" } });
+    expect(screen.getByRole("listitem", { name: "收件人 to@example.com" })).toBeInTheDocument();
+    expect(screen.getByRole("listitem", { name: "收件人 move@example.com" })).toBeInTheDocument();
+    fireEvent.blur(toInput);
+    expect(screen.getByRole("listitem", { name: "收件人 remove@example.com" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "删除收件人 remove@example.com" }));
+    expect(screen.queryByRole("listitem", { name: "收件人 remove@example.com" })).not.toBeInTheDocument();
+    const dragData = new Map<string, string>();
+    const dataTransfer = {
+      effectAllowed: "none", dropEffect: "none",
+      getData: (type: string) => dragData.get(type) ?? "",
+      setData: (type: string, value: string) => { dragData.set(type, value); }
+    } as unknown as DataTransfer;
+    fireEvent.dragStart(screen.getByRole("listitem", { name: "收件人 move@example.com" }), { dataTransfer });
+    fireEvent.dragOver(screen.getByRole("group", { name: "抄送地址" }), { dataTransfer });
+    fireEvent.drop(screen.getByRole("group", { name: "抄送地址" }), { dataTransfer });
+    expect(screen.queryByRole("listitem", { name: "收件人 move@example.com" })).not.toBeInTheDocument();
+    expect(screen.getByRole("listitem", { name: "抄送 move@example.com" })).toBeInTheDocument();
+    fireEvent.change(screen.getByRole("textbox", { name: "密送" }), { target: { value: "hidden@example.com" } });
+    fireEvent.blur(screen.getByRole("textbox", { name: "密送" }));
+    fireEvent.click(screen.getByRole("button", { name: "抄送" }));
+    fireEvent.click(screen.getByRole("button", { name: "密送" }));
+    expect(screen.queryByRole("textbox", { name: "抄送" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("textbox", { name: "密送" })).not.toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("主题"), { target: { value: "Report" } });
+    const attachment = new File(["pdf"], "report.pdf", { type: "application/pdf" });
+    fireEvent.change(document.querySelector('input[type="file"]')!, { target: { files: [attachment] } });
+    fireEvent.click(screen.getByRole("button", { name: "发送" }));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/v1/messages/send", expect.objectContaining({ method: "POST", body: expect.any(FormData) })));
+    const sendCall = fetchMock.mock.calls.find(([input]) => String(input).endsWith("/messages/send"))!;
+    const init = sendCall[1] as RequestInit;
+    expect(init.headers).toEqual({ Authorization: "Bearer valid-token" });
+    const form = init.body as FormData;
+    expect(JSON.parse(String(form.get("message")))).toMatchObject({
+      accountId: account.id, fromAddress: "alias@gmail.com", senderName: "Account Sender",
+      to: ["to@example.com"], cc: ["move@example.com"], bcc: ["hidden@example.com"], subject: "Report"
+    });
+    expect((form.getAll("attachments")[0] as File).name).toBe("report.pdf");
+  });
+
+  it("shows a retry state when compose settings fail to load", async () => {
+    location.hash = "compose";
+    sessionStorage.setItem("imap2api-token", "valid-token");
+    const account = {
+      id: "11111111-1111-4111-8111-111111111111", email: "sender@gmail.com", aliases: [], provider: "gmail",
+      imap: { host: "imap.gmail.com", port: 993, secure: true }, smtp: { host: "smtp.gmail.com", port: 465, secure: true },
+      defaultSenderName: null, hasCredential: true, status: "connected", syncMode: "idle", messageCount: 0, unreadCount: 0,
+      syncFolderCount: 0, lastSyncedAt: null, lastError: null, createdAt: "2026-08-07T00:00:00.000Z", updatedAt: "2026-08-07T00:00:00.000Z"
+    };
+    const eventStream = new ReadableStream<Uint8Array>({ start() {} });
+    let settingsAttempts = 0;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/events")) return { ok: true, status: 200, body: eventStream } as Response;
+      if (url.endsWith("/settings") && settingsAttempts++ === 0) return {
+        ok: false, status: 503, body: null, json: async () => ({ error: { code: "UNAVAILABLE", message: "设置暂时不可用" } })
+      } as Response;
+      const json = async () => url.endsWith("/accounts") ? [account]
+        : url.endsWith("/settings") ? { maxMessagesPerAccount: 100, pollIntervalSeconds: 10, pageSize: 100, maxConcurrentDownloads: 3, maxAttachmentSizeMb: 25, remoteImageAllowlist: [], defaultSenderName: "" }
+          : { ok: true };
+      return { ok: true, status: 200, body: null, json } as Response;
+    }));
+
+    render(<App />);
+    expect(await screen.findByText("写信设置加载失败")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "重新加载" }));
+    expect(await screen.findByRole("heading", { name: "写信" })).toBeInTheDocument();
   });
 });
 
@@ -281,6 +408,7 @@ describe("forwarding mailbox fit", () => {
 describe("message list interactions", () => {
   const account = (id: string, email: string): Account => ({
     id, email, aliases: [], provider: "gmail", imap: { host: "imap.gmail.com", port: 993, secure: true },
+    smtp: { host: "smtp.gmail.com", port: 465, secure: true }, defaultSenderName: null,
     hasCredential: true, status: "connected", syncMode: "idle", messageCount: 1, unreadCount: 1, syncFolderCount: 0,
     lastSyncedAt: "2026-08-07T00:00:00.000Z", lastError: null,
     createdAt: "2026-08-07T00:00:00.000Z", updatedAt: "2026-08-07T00:00:00.000Z"

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { detectProvider, resolveImapConfig } from "./providers.js";
+import { detectProvider, resolveImapConfig, resolveSmtpConfig } from "./providers.js";
 
 describe("provider presets", () => {
   it.each([
@@ -16,5 +16,24 @@ describe("provider presets", () => {
   it("requires a host for unknown providers", () => {
     expect(() => resolveImapConfig("a@example.com")).toThrow("无法识别");
     expect(resolveImapConfig("a@example.com", { provider: "custom", host: "mail.example.com" })).toMatchObject({ host: "mail.example.com" });
+  });
+
+  it.each([
+    ["qq", "smtp.qq.com", 465, true],
+    ["gmail", "smtp.gmail.com", 465, true],
+    ["icloud", "smtp.mail.me.com", 587, false],
+    ["outlook", "smtp-mail.outlook.com", 587, false],
+    ["qq-enterprise", "smtp.exmail.qq.com", 465, true],
+    ["163", "smtp.163.com", 465, true]
+  ] as const)("resolves the %s SMTP preset", (provider, host, port, secure) => {
+    expect(resolveSmtpConfig(provider)).toEqual({ host, port, secure });
+  });
+
+  it("allows custom SMTP and leaves an unconfigured custom account receive-only", () => {
+    expect(resolveSmtpConfig("custom")).toBeNull();
+    expect(resolveSmtpConfig("custom", null)).toBeNull();
+    expect(resolveSmtpConfig("custom", { host: "smtp.example.com", port: 587, secure: false }))
+      .toEqual({ host: "smtp.example.com", port: 587, secure: false });
+    expect(() => resolveSmtpConfig("custom", { port: 587, secure: false })).toThrow("SMTP 主机");
   });
 });

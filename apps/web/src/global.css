@@ -39,6 +39,14 @@
 }
 
 :root {
+  --ui-control-bg: var(--color-base-100);
+  --ui-control-border: var(--color-base-300);
+  --ui-focus: var(--color-secondary);
+  --ui-focus-ring: color-mix(in oklab, var(--color-secondary) 14%, transparent);
+  --ui-focus-outline: color-mix(in oklab, var(--color-secondary) 58%, transparent);
+  --ui-selected-bg: var(--color-base-200);
+  --ui-selected-border: var(--color-base-300);
+  --ui-selected-text: var(--color-base-content);
   color: var(--color-base-content);
   background: var(--color-base-200);
   font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Segoe UI", sans-serif;
@@ -55,7 +63,27 @@ button { color: inherit; }
 button, select { cursor: pointer; }
 button:disabled { cursor: not-allowed; }
 ::selection { background: color-mix(in oklab, var(--color-secondary) 20%, transparent); }
-:focus-visible { outline: 3px solid color-mix(in oklab, var(--color-secondary) 30%, transparent); outline-offset: 2px; }
+:focus-visible { outline: 2px solid var(--ui-focus-outline); outline-offset: 2px; }
+
+.input, .select, .textarea {
+  border: 1px solid var(--ui-control-border);
+  border-radius: 6px;
+  background: var(--ui-control-bg);
+  color: var(--color-base-content);
+  box-shadow: none;
+  outline: none;
+  transition: border-color 140ms cubic-bezier(0.23, 1, 0.32, 1), box-shadow 140ms cubic-bezier(0.23, 1, 0.32, 1), background-color 140ms cubic-bezier(0.23, 1, 0.32, 1);
+}
+.input.input-sm, .select.select-sm, .textarea.textarea-sm { height: 38px; min-height: 38px; }
+.input:focus, .input:focus-visible, .select:focus, .select:focus-visible, .textarea:focus, .textarea:focus-visible {
+  border-color: var(--ui-focus);
+  box-shadow: 0 0 0 3px var(--ui-focus-ring);
+  outline: none;
+}
+
+@media (max-width: 760px) {
+  .input.input-sm, .select.select-sm, .textarea.textarea-sm { height: 44px; min-height: 44px; }
+}
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {

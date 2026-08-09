@@ -33,10 +33,20 @@
 .field input, .field select, .mailControls select, .numberControl input {
   width: 100%; height: 38px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); color: var(--text); padding: 0 11px; font-size: 14px; transition: border-color var(--fast) var(--ease), box-shadow var(--fast) var(--ease), background-color var(--fast) var(--ease);
 }
-.field input:focus, .field select:focus, .mailControls select:focus, .numberControl input:focus { border-color: var(--signal); box-shadow: 0 0 0 3px color-mix(in oklab, var(--color-secondary) 14%, transparent); outline: none; }
+.providerSelectTrigger { width: 100%; height: 38px; min-width: 0; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 0 10px 0 11px; border: 1px solid var(--ui-control-border); border-radius: 6px; background: var(--ui-control-bg); color: var(--text); font-size: 14px; text-align: left; transition: border-color var(--fast) var(--ease), box-shadow var(--fast) var(--ease), background-color var(--fast) var(--ease); }
+.providerSelectTrigger:focus-visible, .providerSelectTrigger[data-state="open"] { border-color: var(--ui-focus); box-shadow: 0 0 0 3px var(--ui-focus-ring); outline: none; }
+.providerSelectTrigger:disabled { opacity: .5; }
+.providerSelectIcon { display: grid; place-items: center; flex: none; color: var(--text-tertiary); }
+.providerSelectContent { z-index: 120; width: var(--radix-select-trigger-width); max-height: min(320px, var(--radix-select-content-available-height)); overflow: hidden; border: 1px solid var(--ui-control-border); border-radius: 7px; background: var(--surface); box-shadow: var(--shadow-float); }
+.providerSelectViewport { padding: 5px; }
+.providerSelectItem { position: relative; min-height: 36px; display: flex; align-items: center; padding: 0 34px 0 10px; border: 1px solid transparent; border-radius: 5px; color: var(--text-secondary); font-size: 13px; outline: none; cursor: pointer; user-select: none; }
+.providerSelectItem[data-highlighted] { background: var(--color-base-200); color: var(--text); }
+.providerSelectItem[data-state="checked"] { border-color: var(--ui-selected-border); background: var(--ui-selected-bg); color: var(--ui-selected-text); font-weight: 600; }
+.providerSelectIndicator { position: absolute; right: 9px; display: grid; place-items: center; color: var(--text); }
 .passwordField { display: grid; grid-template-columns: 1fr 38px; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; transition: border-color var(--fast) var(--ease), box-shadow var(--fast) var(--ease); }
-.passwordField:focus-within { border-color: var(--signal); box-shadow: 0 0 0 3px color-mix(in oklab, var(--color-secondary) 14%, transparent); }
+.passwordField:focus-within { border-color: var(--ui-focus); box-shadow: 0 0 0 3px var(--ui-focus-ring); }
 .passwordField input { height: 38px; min-width: 0; border: 0; padding: 0 11px; outline: none; }
+.passwordField input:focus, .passwordField input:focus-visible { box-shadow: none; }
 .passwordField .iconButton { border-radius: 0; border: 0; border-left: 1px solid var(--border-soft); }
 .formError { display: flex; align-items: flex-start; gap: 7px; margin: 12px 0 0; color: var(--danger); font-size: 13px; line-height: 1.4; }
 .formError svg { flex: none; margin-top: 1px; }
@@ -70,7 +80,7 @@
 .accountTabWithIcon { grid-template-columns: 18px minmax(0, 1fr); }
 .accountTab::after { display: none !important; }
 .accountTab:hover { background: var(--color-base-200); color: var(--text); }
-.accountTab[aria-selected="true"] { border-color: var(--color-base-300); background: var(--color-base-200); color: var(--text); }
+.accountTab[aria-selected="true"] { border-color: var(--ui-selected-border); background: var(--ui-selected-bg); color: var(--ui-selected-text); }
 .accountTabIcon { width: 18px; display: grid; place-items: center; color: var(--text-tertiary); }
 .accountTab[aria-selected="true"] .accountTabIcon { color: var(--text); }
 .accountTabText { min-width: 0; display: grid; gap: 2px; }
@@ -85,6 +95,7 @@
 .utilityNav { width: 100%; gap: 1px; padding: 8px 0 4px; }
 .navButton { width: 100%; min-height: 36px; display: flex; align-items: center; gap: 9px; padding: 0 9px; border-radius: 6px; background: transparent; color: var(--text-secondary); font-size: 13px; text-align: left; }
 .navButton:hover { background: var(--color-base-200); color: var(--text); }
+.navButton[aria-current="page"] { background: var(--ui-selected-bg); color: var(--ui-selected-text); box-shadow: inset 0 0 0 1px var(--ui-selected-border); font-weight: 600; }
 .logoutButton { min-height: 36px; display: flex; justify-content: flex-start; gap: 9px; padding: 0 9px; color: var(--text-secondary); font-size: 13px; }
 .logoutButton:hover { background: color-mix(in oklab, var(--color-error) 7%, transparent); color: var(--danger); }
 .resizeHandle { position: relative; z-index: 24; width: 9px; min-width: 9px; min-height: 0; justify-self: center; touch-action: none; cursor: col-resize; outline: none; background: transparent; }
@@ -162,7 +173,7 @@
 .folderMode { flex: none; overflow: hidden; border: 1px solid var(--border); border-radius: 6px; }
 .folderMode > button { min-height: 28px; height: 28px; border: 0; border-left: 1px solid var(--border); border-radius: 0; background: var(--surface); color: var(--text-secondary); font-size: 12px; font-weight: 520; }
 .folderMode > button:first-child { border-left: 0; }
-.folderMode > .folderModeActive { background: var(--accent); color: var(--color-primary-content); }
+.folderMode > .folderModeActive { background: var(--ui-selected-bg); color: var(--ui-selected-text); font-weight: 650; }
 .folderFixed { color: var(--text-tertiary); font-size: 12px; white-space: nowrap; }
 .folderMissing { background: color-mix(in oklab, var(--warning) 5%, var(--surface)); }
 .folderMissing .folderChoice > svg, .folderMissing .folderChoice small { color: var(--warning); }
@@ -177,6 +188,7 @@
 .accountForm > .field > label, .advancedFields .field > label { align-self: center; padding: 0; }
 .accountForm > .field > .aliasList { grid-column: 2; }
 .aliasInput { display: grid; grid-template-columns: minmax(0, 1fr) 38px; gap: 8px; }
+.aliasInput input { width: 100%; min-width: 0; }
 .aliasList { display: flex; flex-wrap: wrap; gap: 6px; }
 .aliasList > span { min-width: 0; max-width: 100%; display: inline-flex; align-items: center; gap: 3px; padding: 3px 4px 3px 8px; border: 1px solid var(--border-soft); border-radius: 6px; background: var(--surface-raised); font-size: 12px; overflow-wrap: anywhere; }
 .aliasList button { width: 28px; height: 28px; display: inline-grid; place-items: center; flex: none; padding: 0; border: 0; border-radius: 5px; background: transparent; color: var(--text-secondary); }
@@ -184,6 +196,7 @@
 .disclosure { min-height: 36px; display: flex; align-items: center; gap: 8px; padding: 0; background: transparent; color: var(--text-secondary); font-size: 13px; text-align: left; }
 .disclosure span { margin-left: auto; color: var(--text-tertiary); }
 .advancedFields { display: grid; gap: 10px; padding: 12px 14px; border: 1px solid var(--border-soft); border-radius: 7px; background: var(--surface-raised); }
+.advancedHeading { padding-top: 3px; color: var(--text-tertiary); font-size: 12px; font-weight: 650; }
 .checkbox { display: grid; grid-template-columns: 112px auto; align-items: center; justify-content: start; gap: 16px; color: var(--text-secondary) !important; font-size: 13px !important; font-weight: 500; cursor: pointer; }
 .checkbox > span { text-align: right; }
 .checkbox input { width: 36px; height: 20px; justify-self: start; border: 1px solid var(--border); border-radius: 999px; background: var(--color-base-300); color: var(--surface); }
@@ -209,12 +222,12 @@
 .secondaryFilterButton { min-height: 30px; height: 30px; padding: 0 8px; border: 0; border-left: 1px solid var(--border); background: var(--surface); color: var(--text-tertiary); font-size: 12px; font-weight: 500; white-space: nowrap; }
 .secondaryFilterButton:first-child { border-left: 0; }
 .secondaryFilterButton:hover { background: var(--color-base-200); color: var(--text); }
-.secondaryFilterGroup .secondaryFilterButtonActive { background: color-mix(in oklab, var(--accent) 11%, var(--surface)); color: color-mix(in oklab, var(--accent) 76%, var(--text)); font-weight: 650; }
+.secondaryFilterGroup .secondaryFilterButtonActive { background: var(--accent); color: var(--color-primary-content); font-weight: 650; }
 .filterDropdown { display: none; flex: none; }
 .filterDropdownVisible { display: inline-block; }
 .filterDropdownTrigger { position: relative; width: 32px; min-height: 30px; height: 30px; padding: 0; border-color: var(--border); border-radius: 6px; background: var(--surface); color: var(--text-secondary); }
 .filterDropdownTrigger > span { position: absolute; top: -5px; right: -5px; min-width: 16px; height: 16px; display: grid; place-items: center; padding: 0 4px; border: 1px solid var(--surface); border-radius: 999px; background: var(--accent); color: var(--color-primary-content); font-size: 10px; font-weight: 700; }
-.filterDropdown[open] .filterDropdownTrigger { border-color: color-mix(in oklab, var(--accent) 45%, var(--border)); background: color-mix(in oklab, var(--accent) 8%, var(--surface)); color: color-mix(in oklab, var(--accent) 76%, var(--text)); }
+.filterDropdown[open] .filterDropdownTrigger { border-color: var(--ui-selected-border); background: var(--ui-selected-bg); color: var(--ui-selected-text); }
 .filterDropdown > summary::-webkit-details-marker { display: none; }
 .filterMenu { z-index: 20; width: 176px; margin-top: 6px; padding: 5px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface); box-shadow: var(--shadow-float); }
 .filterMenu label { min-height: 36px; display: grid; grid-template-columns: 20px 18px minmax(0, 1fr); gap: 7px; color: var(--text-secondary); font-size: 13px; }
@@ -223,7 +236,7 @@
 .messageList { min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
 .messageRow { width: 100%; height: 80px; display: grid; grid-template-columns: 8px minmax(0, 1fr); gap: 7px; overflow: hidden; padding: 9px 10px 8px; border-bottom: 1px solid var(--border-soft); border-radius: 0; background: var(--surface); text-align: left; }
 .messageRow:hover { background: var(--surface-raised); }
-.messageSelected { background: color-mix(in oklab, var(--color-primary) 6%, var(--color-base-100)) !important; }
+.messageSelected { background: var(--ui-selected-bg) !important; }
 .messageRead .messageMain strong, .messageRead .messageSubject { color: var(--text-secondary); font-weight: 450; }
 .messageRead .messagePreview { color: var(--text-tertiary); }
 .messageRead .unreadDot { opacity: 0; }
@@ -231,9 +244,9 @@
 .messageMain { min-width: 0; display: grid; align-content: start; gap: 4px; }
 .messageMeta { position: relative; min-width: 0; display: flex; justify-content: space-between; align-items: center; gap: 8px; }
 .messageMeta strong, .messageSubject, .messagePreview { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.messageMeta strong { min-width: 0; flex: 1 1 auto; font-size: 13px; font-weight: 650; }
+.messageMeta strong { min-width: 0; max-width: 42%; flex: 0 1 auto; font-size: 13px; font-weight: 650; }
 .messageMetaRight, .messageSignals { min-width: 0; display: flex; align-items: center; gap: 5px; }
-.messageMetaRight { max-width: calc(100% - 72px); flex: 0 1 auto; overflow: hidden; }
+.messageMetaRight { flex: 1 1 0; justify-content: flex-end; overflow: hidden; }
 .messageSignals { max-width: 100%; flex: 0 1 auto; overflow: hidden; color: var(--text-tertiary); }
 .messageMeta time { flex: none; color: var(--text-tertiary); font-size: 11px; }
 .messageSubject { font-size: 13px; font-weight: 600; }
@@ -271,7 +284,7 @@
 .toolbarLabels > :is(span, button)[data-label="unsubscribe"] { background: color-mix(in oklab, var(--color-warning) 10%, var(--color-base-100)); color: color-mix(in oklab, var(--color-warning) 58%, var(--color-base-content)); }
 .copyableForwardedVia { appearance: none; font: inherit; cursor: copy; transition: background-color var(--fast) var(--ease), color var(--fast) var(--ease), box-shadow var(--fast) var(--ease); }
 .copyableForwardedVia:hover { background: var(--color-base-300); color: var(--text); }
-.copyableForwardedVia:focus-visible, .addressCopyButton:focus-visible { outline: 2px solid var(--signal); outline-offset: 2px; }
+.copyableForwardedVia:focus-visible, .addressCopyButton:focus-visible { outline: 2px solid var(--ui-focus-outline); outline-offset: 2px; }
 .copyableForwardedVia[data-copy-state="copied"], .addressCopyButton[data-copy-state="copied"] { color: var(--success); }
 .copyableForwardedVia[data-copy-state="error"], .addressCopyButton[data-copy-state="error"] { color: var(--danger); }
 .detailAction { min-height: 30px; height: 30px; padding: 0 8px; border-radius: 5px; color: var(--text-secondary); font-size: 12px; font-weight: 550; }
@@ -327,6 +340,66 @@
 .numberControl input { width: 110px; }
 .numberControl span { color: var(--text-secondary); font-size: 13px; }
 
+.composeSection { width: 100%; height: 100%; min-height: 520px; }
+.composeForm { height: 100%; min-height: 0; display: grid; grid-template-rows: 52px minmax(0, 1fr); overflow: hidden; background: var(--surface); }
+.composeHeader { min-width: 0; display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 0 14px 0 16px; border-bottom: 1px solid var(--border-soft); background: var(--surface); }
+.composeHeader > div { min-width: 0; display: flex; align-items: baseline; gap: 10px; }
+.composeHeader h2 { margin: 0; font-size: 16px; font-weight: 620; }
+.composeHeader span { color: var(--text-tertiary); font-size: 12px; }
+.composeLayout { min-width: 0; min-height: 0; display: grid; grid-template-columns: 320px minmax(0, 1fr); }
+.composeIdentityPane { min-width: 0; min-height: 0; display: grid; grid-template-rows: auto minmax(0, 1fr); align-content: start; gap: 16px; padding: 14px 12px; overflow: hidden; border-right: 1px solid var(--border-soft); background: var(--surface); }
+.composeIdentityField { min-width: 0; min-height: 0; display: grid; grid-template-rows: auto minmax(0, 1fr); gap: 7px; }
+.composeSenderField { grid-template-rows: auto 38px; }
+.composeAccountField { overflow: hidden; }
+.composeIdentityLabel { color: var(--text-secondary); font-size: 12px; font-weight: 550; }
+.composeIdentityPane input, .composeAddressRow > input, .composeLinkEditor input, .settingsValue > input { width: 100%; height: 38px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); color: var(--text); font-size: 14px; }
+.composeSenderList { min-width: 0; min-height: 0; display: flex; flex-direction: column; gap: 2px; overflow: auto; }
+.composeSenderOption { flex: none; }
+.composeSenderOption > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; font-weight: 560; }
+.composeMessagePane { min-width: 0; min-height: 0; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; gap: 12px; padding: 14px 16px 16px; background: var(--surface); }
+.composeMessageFields { min-width: 0; display: grid; gap: 7px; }
+.composeAddressRow { min-width: 0; display: grid; grid-template-columns: 56px minmax(0, 1fr) auto; align-items: center; gap: 8px; }
+.composeAddressRow > :is(label, .composeAddressLabel) { color: var(--text-secondary); font-size: 12px; font-weight: 550; text-align: right; }
+.composeFromSummary { min-width: 0; height: 38px; display: flex; align-items: center; gap: 9px; padding: 0 11px; }
+.composeFromSummary > :is(strong, span) { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.composeFromSummary strong { max-width: 42%; flex: none; color: var(--text); font-size: 13px; font-weight: 620; }
+.composeFromSummary span { color: var(--text-secondary); font-size: 13px; }
+.composeFromSummary span:only-child { color: var(--text); font-weight: 550; }
+.recipientControl { min-width: 0; min-height: 38px; display: flex; flex-wrap: wrap; align-items: center; gap: 4px; padding: 3px 5px; border: 1px solid var(--ui-control-border); border-radius: 6px; background: var(--ui-control-bg); transition: border-color var(--fast) var(--ease), box-shadow var(--fast) var(--ease), background-color var(--fast) var(--ease); }
+.recipientControl:focus-within { border-color: var(--ui-focus); box-shadow: 0 0 0 3px var(--ui-focus-ring); }
+.recipientControlDragActive { border-color: var(--ui-focus); background: color-mix(in oklab, var(--ui-focus) 5%, var(--ui-control-bg)); box-shadow: inset 0 0 0 1px var(--ui-focus); }
+.recipientInput { min-width: 120px; height: 30px; flex: 1 0 160px; padding: 0 5px; border: 0; background: transparent; color: var(--text); font-size: 14px; outline: none; box-shadow: none; }
+.recipientInput:disabled { opacity: .55; }
+.recipientChip { max-width: 100%; height: 30px; display: inline-flex; align-items: center; gap: 2px; padding: 0 2px 0 9px; border: 1px solid var(--ui-selected-border); border-radius: 5px; background: var(--ui-selected-bg); color: var(--ui-selected-text); font-size: 12px; cursor: grab; }
+.recipientChip:active { cursor: grabbing; }
+.recipientChip > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.recipientChip > button { width: 26px; height: 26px; display: inline-grid; place-items: center; flex: none; padding: 0; border: 0; border-radius: 4px; background: transparent; color: var(--text-tertiary); }
+.recipientChip > button:hover:not(:disabled) { background: color-mix(in oklab, var(--color-base-content) 7%, transparent); color: var(--text); }
+.recipientChipInvalid { border-color: color-mix(in oklab, var(--danger) 36%, var(--ui-selected-border)); background: color-mix(in oklab, var(--danger) 9%, var(--surface)); color: var(--danger); }
+.recipientChipInvalid > button { color: var(--danger); }
+.composeAddressActions { display: flex; align-items: center; gap: 2px; }
+.composeAddressActions button { min-height: 32px; padding: 0 7px; border: 0; border-radius: 5px; background: transparent; color: var(--text-tertiary); font-size: 12px; }
+.composeAddressActions button:hover, .composeAddressActions button[aria-pressed="true"] { background: var(--ui-selected-bg); color: var(--ui-selected-text); }
+.composeEditor { min-width: 0; min-height: 0; display: flex; flex-direction: column; overflow: hidden; border: 1px solid var(--border); border-radius: 7px; background: var(--surface); }
+.composeToolbar { min-height: 44px; display: flex; align-items: center; gap: 2px; padding: 4px 6px; border-bottom: 1px solid var(--border-soft); background: var(--surface-raised); }
+.composeToolbar .iconButton { width: 34px; height: 34px; border-radius: 5px; }
+.composeToolbarSpacer { min-width: 8px; flex: 1; }
+.composeFormatActive { background: var(--ui-selected-bg) !important; color: var(--ui-selected-text); box-shadow: inset 0 0 0 1px var(--ui-selected-border); }
+.composeLinkEditor { min-height: 48px; display: grid; grid-template-columns: minmax(0, 1fr) 36px 36px; align-items: center; gap: 6px; padding: 5px 7px; border-bottom: 1px solid var(--border-soft); }
+.composeEditorBody { min-height: 0; flex: 1; overflow: auto; }
+.composeEditorContent { min-height: 100%; padding: 14px 16px 24px; color: var(--text); font-size: 14px; line-height: 1.65; overflow-wrap: anywhere; outline: none; }
+.composeEditorContent p { margin: 0 0 10px; }
+.composeEditorContent :is(ul, ol) { margin: 0 0 10px; padding-left: 24px; }
+.composeEditorContent a { color: var(--signal); text-decoration: underline; }
+.composeAttachments { min-width: 0; display: flex; align-items: center; gap: 5px; color: var(--text-secondary); font-size: 12px; }
+.composeAttachmentList { max-height: 132px; display: grid; gap: 4px; margin: 0; padding: 6px; overflow: auto; border-top: 1px solid var(--border-soft); list-style: none; }
+.composeAttachmentList li { min-height: 40px; display: grid; grid-template-columns: minmax(0, 1fr) 36px; align-items: center; gap: 8px; padding: 2px 4px 2px 10px; border: 1px solid var(--border-soft); border-radius: 6px; background: var(--surface-raised); }
+.composeAttachmentList li > span { min-width: 0; display: flex; align-items: baseline; gap: 8px; }
+.composeAttachmentList strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; font-weight: 560; }
+.composeAttachmentList small { flex: none; color: var(--text-tertiary); font-size: 11px; }
+.composeEditorFooter { min-height: 42px; display: flex; align-items: center; padding: 3px 7px; border-top: 1px solid var(--border-soft); background: var(--surface); }
+.composeMessagePane > .formError { margin: 0; }
+
 .mobileNav { display: none; }
 .notice { position: fixed; z-index: 110; right: 20px; bottom: 20px; max-width: min(420px, calc(100vw - 40px)); min-height: 42px; display: flex; align-items: center; gap: 8px; padding: 9px 13px; border: 1px solid var(--border); border-radius: 7px; box-shadow: 0 10px 30px color-mix(in oklab, var(--color-neutral) 14%, transparent); font-size: 13px; }
 
@@ -344,6 +417,7 @@
 
 @media (max-width: 900px) {
   .mainContent:not(.messageContent) { padding: 10px; }
+  .composeLayout { grid-template-columns: 280px minmax(0, 1fr); }
 }
 
 @media (max-width: 760px) {
@@ -354,7 +428,7 @@
   .mainContent { padding: 8px 8px 12px; }
   .messageContent { padding: 0; }
   .pageFrame { min-height: 100%; }
-  .mobileNav { position: fixed; z-index: 30; right: 0; bottom: 0; left: 0; height: 64px; display: grid; grid-template-columns: repeat(4, 1fr); padding: 5px max(8px, env(safe-area-inset-right)) max(5px, env(safe-area-inset-bottom)) max(8px, env(safe-area-inset-left)); border-top: 1px solid var(--border); background: color-mix(in oklab, var(--color-base-100) 92%, transparent); backdrop-filter: blur(18px) saturate(1.15); }
+  .mobileNav { position: fixed; z-index: 30; right: 0; bottom: 0; left: 0; height: 64px; display: grid; grid-template-columns: repeat(5, 1fr); padding: 5px max(8px, env(safe-area-inset-right)) max(5px, env(safe-area-inset-bottom)) max(8px, env(safe-area-inset-left)); border-top: 1px solid var(--border); background: color-mix(in oklab, var(--color-base-100) 92%, transparent); backdrop-filter: blur(18px) saturate(1.15); }
   .mobileNav .navButton { min-height: 50px; display: grid; place-items: center; align-content: center; gap: 2px; padding: 0; font-size: 10px; }
   .mobileNav .navButton svg { width: 19px; }
   .sectionToolbar { align-items: center; }
@@ -406,10 +480,36 @@
   .bodyDivider { margin: 0 16px; }
   .textBody { padding: 18px 16px 30px; }
   .settingsField { grid-template-columns: 112px minmax(0, 1fr); gap: 4px 12px; }
+  .composeSection { height: auto; min-height: calc(100dvh - 84px); }
+  .composeForm { height: auto; min-height: calc(100dvh - 84px); grid-template-rows: 52px auto; }
+  .composeHeader { padding: 0 8px 0 12px; }
+  .composeHeader .button { min-height: 44px; }
+  .composeLayout { display: block; }
+  .composeIdentityPane { min-height: 0; grid-template-rows: auto auto; gap: 12px; padding: 12px 10px; overflow: visible; border-right: 0; border-bottom: 1px solid var(--border-soft); }
+  .composeIdentityField { min-height: 0; }
+  .composeSenderList { max-height: 194px; }
+  .composeIdentityPane input, .composeAddressRow > input { height: 44px; }
+  .composeFromSummary { height: 44px; }
+  .recipientControl { min-height: 44px; padding: 3px 4px; }
+  .recipientInput { height: 36px; }
+  .recipientChip { height: 44px; padding-left: 10px; }
+  .recipientChip > button { width: 40px; height: 40px; }
+  .composeMessagePane { min-height: 520px; padding: 10px; }
+  .composeAddressRow { grid-template-columns: 52px minmax(0, 1fr); }
+  .composeAddressActions { grid-column: 2; justify-self: end; }
+  .composeAddressActions button { min-height: 44px; }
+  .composeEditor { min-height: 360px; }
+  .composeToolbar { overflow-x: auto; }
+  .composeToolbar .iconButton { width: 44px; height: 44px; }
+  .composeToolbarSpacer { flex: 0 0 4px; }
+  .composeEditorContent { min-height: 280px; padding: 13px 14px 22px; }
+  .composeAttachments > .iconButton { width: 44px; height: 44px; }
   .settingsForm .button { align-self: flex-end; }
   .dialog { padding: 18px; }
   .fieldWide { grid-template-columns: minmax(0, 1fr) 90px; }
   .field input, .field select { height: 44px; }
+  .providerSelectTrigger { height: 44px; }
+  .providerSelectItem { min-height: 44px; }
   .dialogFooter .button { min-height: 44px; }
   .notice { right: 12px; bottom: 76px; left: 12px; max-width: none; }
 }

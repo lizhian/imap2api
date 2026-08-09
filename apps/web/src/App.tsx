@@ -1,18 +1,21 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent as ReactDragEvent, type FormEvent, type KeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
+import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent as ReactDragEvent, type FormEvent, type KeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
 import * as AlertDialog from "@radix-ui/react-alert-dialog";
+import * as Select from "@radix-ui/react-select";
 import * as Tooltip from "@radix-ui/react-tooltip";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import {
-  Archive, ArrowLeft, Check, ChevronLeft, ChevronRight, CircleAlert, CircleCheck,
+  Archive, ArrowLeft, Check, ChevronDown, ChevronLeft, ChevronRight, CircleAlert, CircleCheck,
   Cloud, Copy, Download, Edit3, ExternalLink, Eye, EyeOff, FileText, Folder, FolderCog, Forward, GripVertical, Image as ImageIcon, Inbox, KeyRound, LogOut, Mail, MailOpen,
-  Paperclip, Plus, RefreshCw, SearchX, Settings as SettingsIcon, ShieldCheck,
-  SlidersHorizontal, Trash2, UserRound, X
+  Paperclip, Plus, RefreshCw, SearchX, Send, Settings as SettingsIcon, ShieldCheck,
+  SlidersHorizontal, SquarePen, Trash2, UserRound, X
 } from "lucide-react";
 import type { Account, AccountInput, AccountOrderUpdate, AccountUpdate, Address, MailboxListResponse, MessageDetail, MessageLabel, MessageListResponse, MessageSecondaryFilter, MessageSummary, MessageView, ProviderId, ServerEvent, Settings, SyncFolderConfig } from "@imap2api/shared";
 import { ApiClient } from "./api";
 import { Button, EmptyState, IconButton, Spinner } from "./components";
 import styles from "./styles.module.css";
+
+const ComposePage = lazy(() => import("./ComposePage").then((module) => ({ default: module.ComposePage })));
 
 const SESSION_KEY = "imap2api-token";
 const LAYOUT_WIDTHS_KEY = "imap2api-layout-widths";
@@ -40,7 +43,7 @@ const MESSAGE_SECONDARY_FILTERS: Array<{ value: MessageSecondaryFilter; label: s
   { value: "forwarded", label: "转发", icon: Forward }
 ];
 
-type Page = "messages" | "accounts" | "settings";
+type Page = "messages" | "compose" | "accounts" | "settings";
 type LayoutWidthName = "sidebar" | "messageList";
 type StoredLayoutWidths = Partial<Record<LayoutWidthName, number>>;
 
@@ -217,7 +220,7 @@ function AuthenticatedApp({ token, onLogout }: { token: string; onLogout: () => 
   const api = useMemo(() => new ApiClient(token), [token]);
   const [page, setPage] = useState<Page>(() => {
     const hash = location.hash.slice(1);
-    return hash === "accounts" || hash === "settings" ? hash : "messages";
+    return hash === "compose" || hash === "accounts" || hash === "settings" ? hash : "messages";
   });
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [activeAccountId, setActiveAccountId] = useState("");
@@ -343,6 +346,7 @@ function AuthenticatedApp({ token, onLogout }: { token: string; onLogout: () => 
           </button>)}
         </nav>
         <nav className={`menu menu-sm ${styles.utilityNav}`} aria-label="管理导航">
+          <li><NavButton active={page === "compose"} icon={<SquarePen size={17} />} label="写信" onClick={() => navigate("compose")} /></li>
           <li><NavButton active={page === "accounts"} icon={<UserRound size={17} />} label="账号管理" onClick={() => navigate("accounts")} /></li>
           <li><NavButton active={page === "settings"} icon={<SettingsIcon size={17} />} label="系统设置" onClick={() => navigate("settings")} /></li>
         </nav>
@@ -350,10 +354,11 @@ function AuthenticatedApp({ token, onLogout }: { token: string; onLogout: () => 
       </aside>
       <ResizeHandle value={sidebarWidth} min={SIDEBAR_MIN_WIDTH} max={sidebarMaxWidth} label="调整邮箱栏宽度" onChange={updateSidebarWidth} />
       <div className={styles.mainColumn}>
-        <main className={`${styles.mainContent} ${page === "messages" ? styles.messageContent : ""}`}>
+        <main className={`${styles.mainContent} ${page === "messages" || page === "compose" ? styles.messageContent : ""}`}>
           <AnimatePresence mode="wait" initial={false}>
-            <motion.div key={page} className={`${styles.pageFrame} ${page === "messages" ? styles.messageFrame : ""}`} initial={reducedMotion ? { opacity: 0 } : { opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} exit={reducedMotion ? { opacity: 0 } : { opacity: 0, y: -4 }} transition={{ duration: reducedMotion ? 0.08 : 0.2 }}>
+            <motion.div key={page} className={`${styles.pageFrame} ${page === "messages" || page === "compose" ? styles.messageFrame : ""}`} initial={reducedMotion ? { opacity: 0 } : { opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} exit={reducedMotion ? { opacity: 0 } : { opacity: 0, y: -4 }} transition={{ duration: reducedMotion ? 0.08 : 0.2 }}>
               {page === "messages" && <MessagesPage api={api} accounts={accounts} accountId={activeAccountId} onAccountChange={setActiveAccountId} revision={messageRevision} onLocalMessageUpdate={registerLocalMessageUpdate} onLocalMessageUpdateFailed={cancelLocalMessageUpdate} onNotice={setNotice} />}
+              {page === "compose" && <Suspense fallback={<div className={styles.centerState}><Spinner /></div>}><ComposePage api={api} accounts={accounts} onNotice={setNotice} /></Suspense>}
               {page === "accounts" && <AccountsPage api={api} accounts={accounts} reload={loadAccounts} reorder={reorderAccounts} onNotice={setNotice} />}
               {page === "settings" && <SettingsPage api={api} onNotice={setNotice} />}
             </motion.div>
@@ -362,6 +367,7 @@ function AuthenticatedApp({ token, onLogout }: { token: string; onLogout: () => 
       </div>
       <nav className={styles.mobileNav} aria-label="移动端主导航">
         <NavButton active={page === "messages"} icon={<Inbox size={19} />} label="邮件" onClick={() => navigate("messages")} />
+        <NavButton active={page === "compose"} icon={<SquarePen size={19} />} label="写信" onClick={() => navigate("compose")} />
         <NavButton active={page === "accounts"} icon={<UserRound size={19} />} label="账号" onClick={() => navigate("accounts")} />
         <NavButton active={page === "settings"} icon={<SettingsIcon size={19} />} label="设置" onClick={() => navigate("settings")} />
         <NavButton active={false} icon={<LogOut size={19} />} label="退出" onClick={onLogout} />
@@ -407,6 +413,12 @@ function AccountsPage({ api, accounts, reload, reorder, onNotice }: { api: ApiCl
     try { await api.request(`/accounts/${account.id}/test`, { method: "POST" }); onNotice({ kind: "success", text: "IMAP 连接成功" }); }
     catch (error) { onNotice({ kind: "error", text: error instanceof Error ? error.message : "连接失败" }); }
     finally { await reload(); }
+  };
+
+  const testSmtp = async (account: Account) => {
+    onNotice({ kind: "success", text: `正在测试 ${account.email} 的 SMTP` });
+    try { await api.request(`/accounts/${account.id}/smtp/test`, { method: "POST" }); onNotice({ kind: "success", text: "SMTP 连接成功" }); }
+    catch (error) { onNotice({ kind: "error", text: error instanceof Error ? error.message : "SMTP 连接失败" }); }
   };
 
   const remove = async () => {
@@ -477,6 +489,7 @@ function AccountsPage({ api, accounts, reload, reorder, onNotice }: { api: ApiCl
               </dl>
               <div className={styles.rowActions}>
                 <IconButton label="测试连接" onClick={() => void test(account)}><ShieldCheck size={17} /></IconButton>
+                <IconButton label="测试 SMTP" disabled={!account.smtp} onClick={() => void testSmtp(account)}><Send size={17} /></IconButton>
                 <IconButton label="立即同步" disabled={syncing} onClick={() => void sync(account)}><RefreshCw className={syncing ? styles.rotating : ""} size={17} /></IconButton>
                 <IconButton label="设置同步文件夹" onClick={() => setFolderAccount(account)}><FolderCog size={17} /></IconButton>
                 <IconButton label="编辑账号" onClick={() => setEditing(account)}><Edit3 size={17} /></IconButton>
@@ -579,12 +592,16 @@ function AccountDialog({ open, account, api, onOpenChange, onSaved }: { open: bo
   const [aliases, setAliases] = useState<string[]>([]); const [aliasInput, setAliasInput] = useState("");
   const [provider, setProvider] = useState<ProviderId>("auto"); const [host, setHost] = useState("");
   const [port, setPort] = useState("993"); const [secure, setSecure] = useState(true);
+  const [smtpHost, setSmtpHost] = useState(""); const [smtpPort, setSmtpPort] = useState("465"); const [smtpSecure, setSmtpSecure] = useState(true);
+  const [defaultSenderName, setDefaultSenderName] = useState("");
   const [advanced, setAdvanced] = useState(false); const [busy, setBusy] = useState(false); const [error, setError] = useState("");
 
   useEffect(() => {
     if (!open) return;
     setEmail(account?.email ?? ""); setPassword(""); setAliases(account?.aliases ?? []); setAliasInput(""); setProvider(account?.provider ?? "auto");
     setHost(account?.imap.host ?? ""); setPort(String(account?.imap.port ?? 993)); setSecure(account?.imap.secure ?? true);
+    setSmtpHost(account?.smtp?.host ?? ""); setSmtpPort(String(account?.smtp?.port ?? 465)); setSmtpSecure(account?.smtp?.secure ?? true);
+    setDefaultSenderName(account?.defaultSenderName ?? "");
     setAdvanced(account?.provider === "custom"); setError("");
   }, [open, account]);
 
@@ -609,18 +626,34 @@ function AccountDialog({ open, account, api, onOpenChange, onSaved }: { open: bo
       submittedAliases = [...aliases, ...aliasInput.split(/[\n,]/u).map((value) => value.trim().toLowerCase()).filter(Boolean)];
     }
     const imap = { provider, ...(advanced && host ? { host } : {}), ...(advanced ? { port: Number(port), secure } : {}) };
+    const smtp = advanced ? (smtpHost.trim() ? { host: smtpHost, port: Number(smtpPort), secure: smtpSecure } : null) : undefined;
     try {
       if (account) {
-        const body: AccountUpdate = { email, aliases: submittedAliases, imap, ...(password ? { password } : {}) };
+        const body: AccountUpdate = {};
+        const normalizedEmail = email.trim().toLowerCase();
+        const normalizedSenderName = defaultSenderName.trim() || null;
+        if (normalizedEmail !== account.email) body.email = normalizedEmail;
+        if (JSON.stringify(submittedAliases) !== JSON.stringify(account.aliases)) body.aliases = submittedAliases;
+        if (provider !== account.provider || (advanced && (host.trim() !== account.imap.host || Number(port) !== account.imap.port || secure !== account.imap.secure))) body.imap = imap;
+        if (smtp !== undefined && JSON.stringify(smtp) !== JSON.stringify(account.smtp)) body.smtp = smtp;
+        if (normalizedSenderName !== account.defaultSenderName) body.defaultSenderName = normalizedSenderName;
+        if (password) body.password = password;
+        if (!Object.keys(body).length) { onSaved("邮箱账号未修改"); return; }
         await api.request(`/accounts/${account.id}`, { method: "PATCH", body: JSON.stringify(body) });
         onSaved("邮箱账号已更新");
       } else {
-        const body: AccountInput = { email, aliases: submittedAliases, password, imap };
+        const body: AccountInput = { email, aliases: submittedAliases, password, imap, defaultSenderName: defaultSenderName.trim() || null, ...(smtp !== undefined ? { smtp } : {}) };
         await api.request("/accounts", { method: "POST", body: JSON.stringify(body) });
         onSaved("邮箱账号已添加");
       }
     } catch (reason) { setError(reason instanceof Error ? reason.message : "保存失败"); }
     finally { setBusy(false); }
+  };
+
+  const changeProvider = (value: ProviderId) => {
+    setProvider(value);
+    setAdvanced(value === "custom");
+    setSmtpHost(""); setSmtpPort("465"); setSmtpSecure(true);
   };
 
   return <Dialog.Root open={open} onOpenChange={onOpenChange}><Dialog.Portal><Dialog.Overlay className={styles.overlay} /><Dialog.Content className={styles.dialog}>
@@ -629,12 +662,23 @@ function AccountDialog({ open, account, api, onOpenChange, onSaved }: { open: bo
       <div className={`fieldset ${styles.field}`}><label className="fieldset-legend" htmlFor="account-email">邮箱地址</label><input className="input input-sm" id="account-email" type="email" value={email} onChange={(event) => setEmail(event.target.value)} required autoFocus /></div>
       <div className={`fieldset ${styles.field}`}><label className="fieldset-legend" htmlFor="account-alias">别名邮箱</label><div className={styles.aliasInput}><input className="input input-sm" id="account-alias" type="email" value={aliasInput} onChange={(event) => setAliasInput(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === ",") { event.preventDefault(); addAliases(); } }} placeholder="alias@example.com" /><IconButton type="button" label="添加别名" onClick={() => addAliases()}><Plus size={17} /></IconButton></div>{aliases.length > 0 && <div className={styles.aliasList}>{aliases.map((alias) => <span className="badge badge-ghost badge-sm" key={alias}>{alias}<button type="button" aria-label={`移除别名 ${alias}`} onClick={() => setAliases((values) => values.filter((value) => value !== alias))}><X size={14} /></button></span>)}</div>}</div>
       <div className={`fieldset ${styles.field}`}><label className="fieldset-legend" htmlFor="account-password">密码 / 授权码</label><input className="input input-sm" id="account-password" type="password" value={password} onChange={(event) => setPassword(event.target.value)} required={!account} autoComplete="new-password" placeholder={account ? "留空表示不修改" : "请输入授权码"} /></div>
-      <div className={`fieldset ${styles.field}`}><label className="fieldset-legend" htmlFor="account-provider">邮箱服务商</label><select className="select select-sm" id="account-provider" value={provider} onChange={(event) => { const value = event.target.value as ProviderId; setProvider(value); if (value === "custom") setAdvanced(true); }}>{PROVIDERS.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select></div>
-      <button type="button" className={styles.disclosure} onClick={() => setAdvanced((value) => !value)} aria-expanded={advanced}><SlidersHorizontal size={16} />高级 IMAP 配置<span>{advanced ? "收起" : "展开"}</span></button>
+      <div className={`fieldset ${styles.field}`}><label className="fieldset-legend" htmlFor="account-provider">邮箱服务商</label><Select.Root value={provider} onValueChange={(value) => changeProvider(value as ProviderId)} disabled={busy}>
+        <Select.Trigger className={styles.providerSelectTrigger} id="account-provider"><Select.Value /><Select.Icon className={styles.providerSelectIcon}><ChevronDown size={16} /></Select.Icon></Select.Trigger>
+        <Select.Portal><Select.Content className={styles.providerSelectContent} position="popper" sideOffset={5} collisionPadding={12}><Select.Viewport className={styles.providerSelectViewport}>
+          {PROVIDERS.map((item) => <Select.Item className={styles.providerSelectItem} key={item.value} value={item.value}><Select.ItemText>{item.label}</Select.ItemText><Select.ItemIndicator className={styles.providerSelectIndicator}><Check size={15} /></Select.ItemIndicator></Select.Item>)}
+        </Select.Viewport></Select.Content></Select.Portal>
+      </Select.Root></div>
+      <div className={`fieldset ${styles.field}`}><label className="fieldset-legend" htmlFor="account-sender-name">默认发件人名称</label><input className="input input-sm" id="account-sender-name" maxLength={200} value={defaultSenderName} onChange={(event) => setDefaultSenderName(event.target.value)} placeholder="继承系统设置" /></div>
+      <button type="button" className={styles.disclosure} onClick={() => setAdvanced((value) => !value)} aria-expanded={advanced}><SlidersHorizontal size={16} />高级 IMAP / SMTP 配置<span>{advanced ? "收起" : "展开"}</span></button>
       {advanced && <motion.div className={styles.advancedFields} initial={{ opacity: 0, y: -4 }} animate={{ opacity: 1, y: 0 }}>
+        <div className={styles.advancedHeading}>IMAP</div>
         <div className={`fieldset ${styles.field}`}><label className="fieldset-legend" htmlFor="imap-host">主机</label><input className="input input-sm" id="imap-host" value={host} onChange={(event) => setHost(event.target.value)} placeholder="imap.example.com" required={provider === "custom"} /></div>
         <div className={`fieldset ${styles.field}`}><label className="fieldset-legend" htmlFor="imap-port">端口</label><input className="input input-sm" id="imap-port" type="number" min="1" max="65535" value={port} onChange={(event) => setPort(event.target.value)} /></div>
-        <label className={styles.checkbox}><span>SSL</span><input className="toggle toggle-sm" type="checkbox" checked={secure} onChange={(event) => setSecure(event.target.checked)} /></label>
+        <label className={styles.checkbox}><span>隐式 TLS</span><input className="toggle toggle-sm" type="checkbox" checked={secure} onChange={(event) => setSecure(event.target.checked)} /></label>
+        <div className={styles.advancedHeading}>SMTP</div>
+        <div className={`fieldset ${styles.field}`}><label className="fieldset-legend" htmlFor="smtp-host">主机</label><input className="input input-sm" id="smtp-host" value={smtpHost} onChange={(event) => setSmtpHost(event.target.value)} placeholder="smtp.example.com" /></div>
+        <div className={`fieldset ${styles.field}`}><label className="fieldset-legend" htmlFor="smtp-port">端口</label><input className="input input-sm" id="smtp-port" type="number" min="1" max="65535" value={smtpPort} onChange={(event) => setSmtpPort(event.target.value)} /></div>
+        <label className={styles.checkbox}><span>隐式 TLS</span><input className="toggle toggle-sm" type="checkbox" checked={smtpSecure} onChange={(event) => setSmtpSecure(event.target.checked)} /></label>
       </motion.div>}
       {error && <p className={styles.formError} role="alert"><CircleAlert size={15} />{error}</p>}
       <div className={styles.dialogFooter}><Dialog.Close asChild><Button type="button">取消</Button></Dialog.Close><Button variant="primary" disabled={busy}>{busy ? <Spinner label="正在保存" /> : "保存账号"}</Button></div>
@@ -1156,6 +1200,7 @@ function SettingsPage({ api, onNotice }: { api: ApiClient; onNotice: (notice: { 
   const [maxAttachmentSizeMb, setMaxAttachmentSizeMb] = useState("100");
   const [remoteImageAllowlist, setRemoteImageAllowlist] = useState<string[]>([]);
   const [remoteImageInput, setRemoteImageInput] = useState("");
+  const [defaultSenderName, setDefaultSenderName] = useState("");
   const [busy, setBusy] = useState(false);
   const remoteImageInputRef = useRef<HTMLInputElement | null>(null);
   useEffect(() => {
@@ -1167,6 +1212,7 @@ function SettingsPage({ api, onNotice }: { api: ApiClient; onNotice: (notice: { 
       setMaxConcurrentDownloads(String(result.maxConcurrentDownloads ?? 3));
       setMaxAttachmentSizeMb(String(result.maxAttachmentSizeMb ?? 100));
       setRemoteImageAllowlist(result.remoteImageAllowlist ?? []);
+      setDefaultSenderName(result.defaultSenderName ?? "");
     }).catch((error) => onNotice({ kind: "error", text: error.message }));
   }, [api, onNotice]);
   const addRemoteImageSender = () => {
@@ -1207,7 +1253,8 @@ function SettingsPage({ api, onNotice }: { api: ApiClient; onNotice: (notice: { 
           pageSize: Number(pageSize),
           maxConcurrentDownloads: Number(maxConcurrentDownloads),
           maxAttachmentSizeMb: Number(maxAttachmentSizeMb),
-          remoteImageAllowlist: nextRemoteImageAllowlist
+          remoteImageAllowlist: nextRemoteImageAllowlist,
+          defaultSenderName
         })
       });
       setSettings(result);
@@ -1226,6 +1273,7 @@ function SettingsPage({ api, onNotice }: { api: ApiClient; onNotice: (notice: { 
     && Number(pageSize) === settings.pageSize
     && Number(maxConcurrentDownloads) === (settings.maxConcurrentDownloads ?? 3)
     && Number(maxAttachmentSizeMb) === (settings.maxAttachmentSizeMb ?? 100)
+    && defaultSenderName === (settings.defaultSenderName ?? "")
     && JSON.stringify(remoteImageAllowlist) === JSON.stringify(settings.remoteImageAllowlist ?? [])
     && !remoteImageInput.trim();
   return <section className={styles.settingsSection}><div className={styles.sectionToolbar}><div><h2>同步与缓存</h2><p>全局邮件策略</p></div></div><form className={styles.settingsForm} onSubmit={save}>
@@ -1234,6 +1282,7 @@ function SettingsPage({ api, onNotice }: { api: ApiClient; onNotice: (notice: { 
     <div className={`fieldset ${styles.settingsField}`}><label className="fieldset-legend" htmlFor="poll-interval">无 IDLE 时轮询间隔</label><div className={styles.numberControl}><input className="input input-sm" id="poll-interval" type="number" min="5" max="3600" value={interval} onChange={(event) => setIntervalValue(event.target.value)} /><span>秒</span></div><p>支持 IDLE 的邮箱保持实时长连接，此设置只用于不支持 IDLE 的服务器。</p></div>
     <div className={`fieldset ${styles.settingsField}`}><label className="fieldset-legend" htmlFor="max-concurrent-downloads">附件并发下载</label><div className={styles.numberControl}><input className="input input-sm" id="max-concurrent-downloads" type="number" min="1" max="10" value={maxConcurrentDownloads} onChange={(event) => setMaxConcurrentDownloads(event.target.value)} /><span>个</span></div><p>所有邮箱账号共享，超过限制的下载请求会按顺序等待。</p></div>
     <div className={`fieldset ${styles.settingsField}`}><label className="fieldset-legend" htmlFor="max-attachment-size">单附件大小上限</label><div className={styles.numberControl}><input className="input input-sm" id="max-attachment-size" type="number" min="1" max="1024" value={maxAttachmentSizeMb} onChange={(event) => setMaxAttachmentSizeMb(event.target.value)} /><span>MB</span></div><p>范围为 1–1024 MB，超过上限的附件不会开始下载。</p></div>
+    <div className={`fieldset ${styles.settingsField}`}><label className="fieldset-legend" htmlFor="default-sender-name">默认发件人名称</label><div className={styles.settingsValue}><input className="input input-sm" id="default-sender-name" maxLength={200} value={defaultSenderName} onChange={(event) => setDefaultSenderName(event.target.value)} placeholder="留空表示不设置" /><p>账号未设置专属名称时使用，写信时仍可修改。</p></div></div>
     <div className={`fieldset ${styles.settingsField}`}><label className="fieldset-legend" htmlFor="remote-image-sender">自动加载图片发件人</label><div className={styles.settingsValue}><div className={styles.aliasInput}><input ref={remoteImageInputRef} className="input input-sm" id="remote-image-sender" type="email" maxLength={320} value={remoteImageInput} onChange={(event) => setRemoteImageInput(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === ",") { event.preventDefault(); addRemoteImageSender(); } }} placeholder="sender@example.com" /><IconButton type="button" label="添加图片白名单" disabled={!remoteImageInput.trim() || (remoteImageAllowlist.length >= 200 && !remoteImageAllowlist.includes(remoteImageInput.trim().toLowerCase()))} onClick={addRemoteImageSender}><Plus size={17} /></IconButton></div>{remoteImageAllowlist.length > 0 && <div className={styles.aliasList}>{remoteImageAllowlist.map((address) => <span className="badge badge-ghost badge-sm" key={address}>{address}<button type="button" aria-label={`移除图片白名单 ${address}`} onClick={() => setRemoteImageAllowlist((current) => current.filter((item) => item !== address))}><X size={14} /></button></span>)}</div>}<p>仅匹配完整发件人邮箱地址，最多 200 个；匹配后打开邮件会自动请求其中的远程图片。</p></div></div>
     <Button variant="primary" disabled={busy || unchanged}>{busy ? <Spinner label="正在保存" /> : "保存设置"}</Button>
   </form></section>;

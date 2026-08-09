@@ -14,12 +14,26 @@ export interface ImapConfig {
   secure?: boolean;
 }
 
+export interface SmtpConfig {
+  host?: string;
+  port?: number;
+  secure?: boolean;
+}
+
+export interface ResolvedSmtpConfig {
+  host: string;
+  port: number;
+  secure: boolean;
+}
+
 export interface Account {
   id: string;
   email: string;
   aliases: string[];
   provider: ProviderId;
   imap: Required<Pick<ImapConfig, "host" | "port" | "secure">>;
+  smtp: ResolvedSmtpConfig | null;
+  defaultSenderName: string | null;
   hasCredential: true;
   status: ConnectionStatus;
   syncMode: SyncMode | null;
@@ -61,6 +75,8 @@ export interface AccountInput {
   password: string;
   aliases?: string[];
   imap?: ImapConfig;
+  smtp?: SmtpConfig | null;
+  defaultSenderName?: string | null;
 }
 
 export interface AccountUpdate {
@@ -68,6 +84,8 @@ export interface AccountUpdate {
   password?: string;
   aliases?: string[];
   imap?: ImapConfig;
+  smtp?: SmtpConfig | null;
+  defaultSenderName?: string | null;
 }
 
 export interface AccountOrderUpdate {
@@ -124,6 +142,24 @@ export interface Settings {
   maxConcurrentDownloads: number;
   maxAttachmentSizeMb: number;
   remoteImageAllowlist: string[];
+  defaultSenderName: string;
+}
+
+export interface SendMailInput {
+  accountId: string;
+  fromAddress: string;
+  senderName?: string;
+  to: string[];
+  cc?: string[];
+  bcc?: string[];
+  subject: string;
+  html: string;
+}
+
+export interface SendMailResult {
+  messageId: string;
+  accepted: string[];
+  rejected: string[];
 }
 
 export interface SyncTriggerResult {
