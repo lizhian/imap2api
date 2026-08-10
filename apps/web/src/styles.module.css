@@ -173,7 +173,7 @@
 .folderMode { flex: none; overflow: hidden; border: 1px solid var(--border); border-radius: 6px; }
 .folderMode > button { min-height: 28px; height: 28px; border: 0; border-left: 1px solid var(--border); border-radius: 0; background: var(--surface); color: var(--text-secondary); font-size: 12px; font-weight: 520; }
 .folderMode > button:first-child { border-left: 0; }
-.folderMode > .folderModeActive { background: var(--ui-selected-bg); color: var(--ui-selected-text); font-weight: 650; }
+.folderMode > .folderModeActive { background: var(--accent); color: var(--color-primary-content); font-weight: 650; }
 .folderFixed { color: var(--text-tertiary); font-size: 12px; white-space: nowrap; }
 .folderMissing { background: color-mix(in oklab, var(--warning) 5%, var(--surface)); }
 .folderMissing .folderChoice > svg, .folderMissing .folderChoice small { color: var(--warning); }

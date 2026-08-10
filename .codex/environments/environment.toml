@@ -8,4 +8,4 @@ script = ""
 [[actions]]
 name = "run"
 icon = "tool"
-command = "EMAIL2API_TOKEN='email2api-local-preview-token-2026-08-06' EMAIL2API_DATA_DIR=\"$PWD/data\" npm run dev"
+command = "IMAP2API_TOKEN='12345678901234567890123456789012' EMAIL2API_DATA_DIR=\"$PWD/data\" npm run dev"

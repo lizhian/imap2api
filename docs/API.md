@@ -21,6 +21,8 @@
 Authorization: Bearer <EMAIL2API_TOKEN>
 ```
 
+`EMAIL2API_TOKEN` 在服务启动时必须至少包含 32 个字符，并同时用于本地数据库密钥派生。已有数据库不能直接更换 Token；当前 API 不提供 Token 轮换、刷新或按账号授权能力。
+
 JSON 请求还应携带：
 
 ```http
@@ -69,7 +71,7 @@ curl -X POST \
 | `ProviderId` | `auto`, `qq`, `gmail`, `icloud`, `outlook`, `qq-enterprise`, `163`, `custom` | 邮箱服务商；`auto` 仅用于入参自动识别 |
 | `ConnectionStatus` | `pending`, `connecting`, `connected`, `warning`, `error` | 账号连接状态 |
 | `SyncMode` | `idle`, `polling` | 系统邮箱主会话使用实时 IDLE 或定时轮询；尚未建立会话时为 `null` |
-| `SyncFolderMode` | `idle`, `polling` | 自定义同步文件夹使用独立 IDLE 连接或账号级共享轮询连接 |
+| `SyncFolderMode` | `idle`, `polling` | 自定义同步文件夹请求使用独立 IDLE 连接或账号级共享轮询连接；服务器不支持 IDLE 时会降级 |
 | `MessageView` | `all`, `unread`, `junk` | 邮件列表视图 |
 | `MessageSecondaryFilter` | `verification_code`, `attachment`, `forwarded` | 邮件列表的可组合次级筛选条件 |
 | `FolderKind` | `inbox`, `junk` | 收件箱或垃圾箱 |
@@ -79,7 +81,7 @@ curl -X POST \
 
 | 状态 | 含义 |
 | --- | --- |
-| `pending` | 账号刚创建或更新，等待连接 |
+| `pending` | 账号刚创建，或 IMAP/同步文件夹配置刚更新，等待连接 |
 | `connecting` | 正在连接或初始化任一已配置邮箱文件夹 |
 | `connected` | 收件箱及其他已配置同步会话均正常工作 |
 | `warning` | 收件箱可用，但垃圾箱或自定义文件夹缺失、失败，或自定义 IDLE 已降级为轮询 |
@@ -126,10 +128,10 @@ curl -X POST \
 | `messageCount` | `integer` | 当前账号的本地缓存邮件总数 |
 | `unreadCount` | `integer` | 当前账号的本地未读邮件数 |
 | `syncFolderCount` | `integer` | 已选择的自定义同步文件夹数，不含系统收件箱和垃圾箱 |
-| `lastSyncedAt` | `string \| null` | 最近一次成功同步时间 |
+| `lastSyncedAt` | `string \| null` | 任一已配置文件夹最近一次成功同步时间，不表示所有文件夹均成功 |
 | `lastError` | `string \| null` | 最近连接错误摘要 |
 | `createdAt` | `string` | 创建时间 |
-| `updatedAt` | `string` | 更新时间 |
+| `updatedAt` | `string` | 账号记录更新时间；连接状态或同步模式变化也会更新该字段 |
 
 ### 2.4 `MessageSummary`
 
@@ -304,7 +306,7 @@ Content-Type: application/json
 
 `200 OK`：返回按新顺序排列的完整 `Account[]`。
 
-可能的业务错误：`400 VALIDATION_ERROR`。如果排序期间账号集合已变化，调用方应重新查询账号列表后再提交完整顺序。
+可能的业务错误：`400 VALIDATION_ERROR`。如果排序期间账号集合已变化，调用方应重新查询账号列表后再提交完整顺序。排序完成后新建的账号会追加到末尾。
 
 ### 5.3 新增账号
 
@@ -328,7 +330,7 @@ POST /api/v1/accounts
 | `smtp.host` | `string` | 否 | 最长 255 字符；自定义 SMTP 必须提供 |
 | `smtp.port` | `integer` | 否 | 1–65535，默认使用预设值或 `465` |
 | `smtp.secure` | `boolean` | 否 | `true` 使用隐式 TLS；`false` 强制 STARTTLS |
-| `defaultSenderName` | `string \| null` | 否 | 最长 200 字符；`null` 表示继承系统设置 |
+| `defaultSenderName` | `string \| null` | 否 | 最长 200 字符且不能包含 CR/LF；`null`、空字符串或纯空白表示继承系统设置 |
 
 已内置 `qq`、`gmail`、`icloud`、`outlook`、`qq-enterprise`、`163` 的 IMAP 预设。Gmail、iCloud、QQ、163 等邮箱通常需要应用专用密码或授权码；当前接口不支持 OAuth 登录。
 
@@ -390,6 +392,17 @@ PATCH /api/v1/accounts/:id
 ```
 
 `200 OK`：返回更新后的 `Account`。修改 `email`、`password` 或 `imap` 会重置连接状态并重启同步会话；只修改 `smtp`、`defaultSenderName` 或 `aliases` 不会重启 IMAP。修改邮箱或别名会重新分类已缓存邮件。
+
+修改 `email` 但省略 `imap` 时会保留账号当前已解析的 IMAP 服务商和连接参数，不会按新域名重新自动识别。需要重新识别时，应同时提交：
+
+```json
+{
+  "email": "new-address@outlook.com",
+  "imap": {
+    "provider": "auto"
+  }
+}
+```
 
 可能的业务错误：
 
@@ -508,7 +521,7 @@ GET /api/v1/accounts/:id/mailboxes
 | `kind` | `inbox \| junk \| custom` | 系统收件箱、系统垃圾箱或可选自定义文件夹 |
 | `selectable` | `boolean` | 是否允许出现在 `sync-folders` 入参中 |
 | `available` | `boolean` | 当前远端是否仍存在该文件夹 |
-| `selectedMode` | `SyncFolderMode \| null` | 自定义文件夹当前同步模式；未选择或系统文件夹为 `null` |
+| `selectedMode` | `SyncFolderMode \| null` | 自定义文件夹保存的请求模式；未选择或系统文件夹为 `null`，不代表降级后的有效模式 |
 | `cachedMessageCount` | `integer` | 该真实 IMAP 文件夹当前的本地缓存邮件数 |
 
 文件夹路径来自 IMAP 服务器，客户端应按普通文本处理。服务端只在加密配置和加密邮件传输信息中保存路径。
@@ -539,7 +552,7 @@ Content-Type: application/json
 
 - 每个账号最多选择 20 个自定义文件夹，其中最多 5 个使用 `idle`。
 - 新增的路径必须存在且可选择；远端暂时缺失的已配置路径可以继续保留。
-- `idle` 文件夹各使用一个长期连接；`polling` 文件夹在账号内共享一个连接并顺序同步。
+- `idle` 文件夹通常各使用一个长期连接；服务器不支持 IDLE 时会降级到轮询并把账号置为 `warning`，但保存的 `selectedMode` 仍为 `idle`。`polling` 文件夹在账号内共享一个连接并顺序同步。
 - 取消选择会删除该文件夹的本地缓存并通过 SSE 发送删除 ID，不会删除远端邮件。
 - 自定义文件夹邮件在公开邮件列表中继续使用 `folder: "inbox"`，不会通过 API 或 SSE 暴露真实路径。
 
@@ -619,6 +632,8 @@ GET /api/v1/messages?accountId=5f3deca8-7aa3-489a-bcf5-03ca02fb7474&view=unread&
 
 分页时应保留首个请求的 `accountId`、`view`、全部 `filter`、`after`、`before` 和 `limit`，仅追加或替换 `cursor`。游标依赖当前排序边界，缓存变化后可能出现正常的跨页漂移；对一致性敏感的调用方应在收到 SSE 变更事件后从第一页重新查询。
 
+`accountId` 只作为筛选条件使用；传入格式正确但不存在的账号 ID 时，接口返回 `200`、空 `items`、`nextCursor: null` 和 `total: 0`，不会返回 `ACCOUNT_NOT_FOUND`。
+
 可能的业务错误：`400 VALIDATION_ERROR`，包括无效时间、枚举、范围或分页游标。
 
 ### 6.2 查询邮件详情
@@ -673,7 +688,14 @@ GET /api/v1/messages/:id
 
 可能的业务错误：`404 MESSAGE_NOT_FOUND`。
 
-安全注意：虽然 `html` 已由服务端净化，集成方仍应使用隔离且禁止脚本、弹窗和顶层导航的 sandbox iframe 展示，不能直接注入应用 DOM。远程图片和外部链接也应由宿主应用显式控制。
+HTML 线格式约定：
+
+- 外部链接只保留 `http:`、`https:`、`mailto:`，目标地址放在 `<a data-safe-href="...">`，不会直接放入 `href`。宿主应用应拦截点击、重新校验协议并由用户确认后打开。
+- 远程 HTTP(S) 图片地址放在 `<img data-remote-src="...">`，默认没有 `src`。只有调用方依据设置或用户操作明确允许时，才应把它复制到 `src`。
+- 通过内容和大小校验的 CID 内嵌 PNG、JPEG、GIF、WebP 会以内联 `data:` URL 保留；单张最多 2 MiB、每封邮件合计最多 5 MiB、最多 32 张。
+- `verificationCode` 只提取验证码关键词附近、包含数字的 4–8 位字母数字组合；`unsubscribeUrl` 只返回退订上下文中的安全 HTTP(S) 地址。自动识别结果可能为 `null`，不能替代业务侧校验。
+
+安全注意：虽然 `html` 已由服务端净化，集成方仍应使用隔离且禁止脚本、弹窗、表单提交和顶层导航的 sandbox iframe 展示，不能直接注入应用 DOM。建议额外设置拒绝脚本、对象、frame、表单和默认网络访问的 CSP，并使用 `no-referrer`；只有明确允许远程图片时才单独放宽 `img-src`。
 
 ### 6.3 下载附件
 
@@ -700,7 +722,9 @@ Authorization: Bearer <EMAIL2API_TOKEN>
 | `Cache-Control` | 固定为 `private, no-store` |
 | `X-Content-Type-Options` | 固定为 `nosniff` |
 
-下载不支持 HTTP Range、断点续传或批量 ZIP。附件元数据 `id` 为 `null` 时不可调用下载接口，应等待同步完成元数据回填。
+下载不支持 HTTP Range、断点续传或批量 ZIP，也不保证返回 `Content-Length`。附件元数据 `id` 为 `null` 时不可调用下载接口，应等待同步完成元数据回填。
+
+附件下载并发由 `maxConcurrentDownloads` 控制；其余请求按 FIFO 排队，最多等待 50 个，排队超过 30 秒返回 `DOWNLOAD_QUEUE_TIMEOUT`。降低并发设置不会中断已经开始的下载，只影响后续调度。
 
 可能的业务错误：
 
@@ -788,7 +812,7 @@ Content-Type: application/json
 可能的业务错误：
 
 - `404 ACCOUNT_NOT_FOUND`
-- `502 IMAP_UPDATE_FAILED`：连接级失败导致无法处理任何文件夹 |
+- `502 IMAP_UPDATE_FAILED`：连接级失败导致无法处理任何文件夹
 
 ### 6.6 发送邮件
 
@@ -803,7 +827,7 @@ multipart 字段：
 
 | 字段 | 类型 | 必填 | 约束与说明 |
 | --- | --- | --- | --- |
-| `message` | 文本字段 | 是 | 只允许一个，内容为下表所述 JSON |
+| `message` | 文本字段 | 是 | 只允许一个，内容为下表所述 JSON；整个字段最多 1 MiB + 64 KiB |
 | `attachments` | 文件字段 | 否 | 可重复，最多 20 个；文件名和 MIME 类型会被安全规范化 |
 
 `message` JSON：
@@ -812,7 +836,7 @@ multipart 字段：
 | --- | --- | --- | --- |
 | `accountId` | `string(UUID)` | 是 | 用于 SMTP 登录的账号 ID |
 | `fromAddress` | `string(email)` | 是 | 账号主邮箱或已配置别名；服务端会转为小写 |
-| `senderName` | `string` | 否 | 最长 200 字符，不得包含 CR/LF；省略时使用账号级或系统级默认值 |
+| `senderName` | `string` | 否 | 最长 200 字符，不得包含 CR/LF；省略、空字符串或纯空白时使用账号级或系统级默认值 |
 | `to` | `string(email)[]` | 是 | 主收件人数组，可为空；单数组最多 100 项 |
 | `cc` | `string(email)[]` | 否 | 抄送人数组，最多 100 项 |
 | `bcc` | `string(email)[]` | 否 | 密送人数组，最多 100 项 |
@@ -836,8 +860,8 @@ multipart 字段：
 
 - `fromAddress` 必须是账号主邮箱或已配置别名；SMTP 登录始终使用主邮箱和账号授权码。
 - 发件人名称按请求值、账号默认值、系统默认值的顺序解析。
-- 最多 20 个附件；单件及总大小均不能超过 `maxAttachmentSizeMb`。附件仅在请求期间临时保存，结束后清理。
-- HTML 仅保留段落、三级标题、粗体、斜体、下划线、删除线、引用、分隔线、列表、安全链接和受控样式的表格，并同时生成纯文本正文。
+- 最多 20 个附件；单件及总大小均不能超过 `maxAttachmentSizeMb`。文件名中的控制字符、`/` 和 `\` 会替换为 `_`，最长保留 255 个 Unicode 字符；无效 MIME 类型降级为 `application/octet-stream`。附件仅在请求期间临时保存，结束后清理。
+- HTML 仅保留段落、三级标题、粗体、斜体、下划线、删除线、引用、分隔线、列表、HTTP(S)/mailto 链接和表格。表格只允许 `border-collapse: collapse`、`width: 100%`、`table-layout: fixed`；单元格只允许实现内置表格样式所需的边框、内边距、顶部对齐、表头背景和左对齐，并同时生成纯文本正文。
 
 完整成功返回 `200 OK`，部分收件人被拒绝返回 `207 Multi-Status`：
 
@@ -856,6 +880,8 @@ multipart 字段：
 | `messageId` | `string` | SMTP 服务器返回的消息 ID |
 | `accepted` | `string[]` | SMTP 服务器接受的收件地址 |
 | `rejected` | `string[]` | SMTP 服务器拒绝的收件地址；非空时 HTTP 状态码为 `207` |
+
+`SMTP_RECIPIENTS_REJECTED` 表示全部收件人被拒绝，其 `error.details` 为 `{ "rejected": string[] }`。
 
 可能的业务错误：`400 VALIDATION_ERROR`、`400 SMTP_NOT_CONFIGURED`、`404 ACCOUNT_NOT_FOUND`、`413 ATTACHMENT_TOO_LARGE`、`413 ATTACHMENT_TOTAL_TOO_LARGE`、`502 SMTP_RECIPIENTS_REJECTED`、`502 SMTP_SEND_FAILED`。
 
@@ -887,12 +913,12 @@ GET /api/v1/settings
 | 字段 | 类型 | 范围 | 说明 |
 | --- | --- | --- | --- |
 | `maxMessagesPerAccount` | `integer` | 1–10000 | 每个账号在所有已同步文件夹中合计保留的最大缓存邮件数 |
-| `pollIntervalSeconds` | `integer` | 5–3600 | 不支持 IDLE 的会话轮询间隔；支持 IDLE 的会话不按此间隔轮询 |
+| `pollIntervalSeconds` | `integer` | 5–3600 | 所有轮询会话和共享轮询组的间隔；正在使用 IDLE 的会话不按此间隔轮询 |
 | `pageSize` | `integer` | 10–100 | 管理端邮件列表每页加载的邮件数量 |
 | `maxConcurrentDownloads` | `integer` | 1–10 | 单进程内所有账号共享的附件并发下载上限 |
-| `maxAttachmentSizeMb` | `integer` | 1–1024 | 单附件下载、发信单附件及单次发信附件总量上限 |
-| `autoLoadRemoteImages` | `boolean` | - | 是否为所有邮件自动加载远程图片；启用后忽略发件人白名单限制 |
-| `remoteImageAllowlist` | `string[]` | 最多 200 项 | 打开邮件时允许自动加载远程图片的完整发件人邮箱地址 |
+| `maxAttachmentSizeMb` | `integer` | 1–1024 | 单附件下载、发信单附件及单次发信附件总量上限；按 MiB（1024 × 1024 字节）计算 |
+| `autoLoadRemoteImages` | `boolean` | - | 客户端是否为所有邮件自动加载远程图片；启用后客户端应忽略发件人白名单限制 |
+| `remoteImageAllowlist` | `string[]` | 最多 200 项 | 客户端打开邮件时允许自动加载远程图片的完整发件人邮箱地址 |
 | `defaultSenderName` | `string` | 最多 200 字符 | 系统默认发件人名称；空字符串表示不设置 |
 
 ### 7.2 修改设置
@@ -920,6 +946,8 @@ PATCH /api/v1/settings
 
 `remoteImageAllowlist` 的每一项必须是完整邮箱地址，最多 200 项；服务端会去除首尾空格、转为小写并去重。`defaultSenderName` 最长 200 字符且不能包含 CR/LF，空字符串表示清除系统默认发件人名称。
 
+远程图片两个设置只是由服务端持久化并返回的客户端策略。服务端始终以 `data-remote-src` 返回远程图片占位，不会根据设置主动请求图片或改写邮件 HTML；集成方应对 `from[].address` 做去空格、不区分大小写的完整地址匹配后自行执行策略。
+
 降低 `maxMessagesPerAccount` 会立即清理超出保留窗口的本地缓存，并通过 SSE 发送对应的 `messages.changed.deletedIds`；不会删除远端邮件。
 
 可能的业务错误：`400 VALIDATION_ERROR`。
@@ -941,6 +969,8 @@ Authorization: Bearer <EMAIL2API_TOKEN>
 | `accountId` | `string(UUID)` | 只接收该账号的 `messages.changed` 和 `account.changed`；`ready` 始终会发送 |
 
 浏览器原生 `EventSource` 不能设置 Bearer Header，因此浏览器集成必须使用 `fetch()` 读取响应流。Token 不得放入 URL。
+
+`accountId` 只校验 UUID 格式，不校验账号是否存在；不存在时连接仍成功并收到 `ready`，但不会收到该账号的后续变更事件。
 
 ```ts
 const controller = new AbortController();
@@ -1039,9 +1069,12 @@ data: {"accountId":"5f3deca8-7aa3-489a-bcf5-03ca02fb7474","status":"connected","
 | `lastSyncedAt` | `string \| null` | 最近一次成功同步时间 |
 | `occurredAt` | `string` | 事件产生时间 |
 
+该事件不包含 `lastError`、计数或完整账号配置；需要错误摘要或完整状态时，应重新调用 `GET /accounts`。
+
 ### 8.5 重连约定
 
 - 当前服务不提供事件历史，也不会根据 `Last-Event-ID` 重放断线期间的事件。
+- 同一条连接内事件按服务端发布顺序到达，但断线期间的事件可能丢失，事件 ID 在服务重启后使用新的 boot ID。
 - SSE 断线重连成功并收到 `ready` 后，应重新查询账号和相关邮件列表，以服务端当前状态为准。
 - 客户端应采用带上限的退避重连，并在退出登录或组件卸载时取消连接。
 - 反向代理必须关闭 SSE 响应缓冲，并允许长期连接。
@@ -1108,8 +1141,9 @@ data: {"accountId":"5f3deca8-7aa3-489a-bcf5-03ca02fb7474","status":"connected","
 - 邮件 ID 是本地缓存资源 ID。邮件从缓存移除后，对应详情接口会返回 `404 MESSAGE_NOT_FOUND`。
 - 已读接口会修改远端邮箱状态；删除账号和调整缓存上限只修改本地数据，不删除远端邮件。
 - 附件只在请求下载时从远端 IMAP 流式读取；本地加密缓存仅保存附件元数据，不保存附件内容。
+- 发信接口没有幂等键或重复投递检测。网络超时或连接中断后，调用方不能盲目自动重试，否则可能发送重复邮件。
 - 当前认证模型是单个服务级 Bearer Token，没有按调用方、账号或接口划分权限。对外提供能力时，建议由集成方自己的后端代理调用，不要把 Token 下发到不可信客户端。
-- 服务端当前未声明跨域访问策略。浏览器跨域集成应通过同源后端代理或在受控反向代理层配置严格的 CORS。
+- 服务端当前未声明跨域访问策略，也没有内置调用方级限流。浏览器跨域集成应通过同源后端代理或在受控反向代理层配置严格的 CORS、访问控制和限流。
 
 ## 11. TypeScript 类型来源
 
