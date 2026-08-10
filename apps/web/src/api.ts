@@ -1,4 +1,4 @@
-import type { ApiError, ServerEvent } from "@imap2api/shared";
+import type { ApiError, ServerEvent } from "@email2api/shared";
 
 export class ApiClient {
   constructor(private readonly token: string) {}

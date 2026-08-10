@@ -1,6 +1,6 @@
 import { ImapFlow } from "imapflow";
 import { Transform, type Readable } from "node:stream";
-import type { Account, MailboxListResponse, ReadAllResult, SyncFolderConfig, SyncTriggerResult } from "@imap2api/shared";
+import type { Account, MailboxListResponse, ReadAllResult, SyncFolderConfig, SyncTriggerResult } from "@email2api/shared";
 import { AccountSupervisor, isSelectableCustomMailbox, resolveSystemMailboxes, type ImapClientFactory, type ListedMailbox, type PollScheduler } from "./account-supervisor.js";
 import { AppDatabase, type StoredAccount } from "./database.js";
 import { EventBroker } from "./events.js";

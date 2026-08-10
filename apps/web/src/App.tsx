@@ -10,15 +10,15 @@ import {
   Paperclip, Plus, RefreshCw, SearchX, Send, Settings as SettingsIcon, ShieldCheck,
   SlidersHorizontal, SquarePen, Trash2, UserRound, X
 } from "lucide-react";
-import type { Account, AccountInput, AccountOrderUpdate, AccountUpdate, Address, MailboxListResponse, MessageDetail, MessageLabel, MessageListResponse, MessageSecondaryFilter, MessageSummary, MessageView, ProviderId, ServerEvent, Settings, SyncFolderConfig } from "@imap2api/shared";
+import type { Account, AccountInput, AccountOrderUpdate, AccountUpdate, Address, MailboxListResponse, MessageDetail, MessageLabel, MessageListResponse, MessageSecondaryFilter, MessageSummary, MessageView, ProviderId, ServerEvent, Settings, SyncFolderConfig } from "@email2api/shared";
 import { ApiClient } from "./api";
 import { Button, EmptyState, IconButton, Spinner } from "./components";
 import styles from "./styles.module.css";
 
 const ComposePage = lazy(() => import("./ComposePage").then((module) => ({ default: module.ComposePage })));
 
-const SESSION_KEY = "imap2api-token";
-const LAYOUT_WIDTHS_KEY = "imap2api-layout-widths";
+const SESSION_KEY = "email2api-token";
+const LAYOUT_WIDTHS_KEY = "email2api-layout-widths";
 const SIDEBAR_MIN_WIDTH = 200;
 const SIDEBAR_MAX_WIDTH = 360;
 const MESSAGE_LIST_MIN_WIDTH = 320;
@@ -201,7 +201,7 @@ function Login({ onLogin }: { onLogin: (token: string) => void }) {
     <main className={styles.loginPage}>
       <motion.form initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.24 }} className={`card bg-base-100 ${styles.loginPanel}`} onSubmit={submit}>
         <div className={styles.brandMark}><Mail size={20} strokeWidth={2} /></div>
-        <h1>imap2api</h1>
+        <h1>email2api</h1>
         <div className={styles.field}>
           <label htmlFor="token">访问 Token</label>
           <div className={styles.passwordField}>
@@ -336,7 +336,7 @@ function AuthenticatedApp({ token, onLogout }: { token: string; onLogout: () => 
   return (
     <div className={`${styles.appShell} bg-base-200 text-base-content`} style={{ "--sidebar-width": `${sidebarWidth}px` } as CSSProperties}>
       <aside className={`${styles.sidebar} bg-base-100`}>
-        <div className={styles.sidebarBrand}><span className={styles.brandMark}><Mail size={18} /></span><strong>imap2api</strong><span className={`status status-xs ${connectionBadge.status}`} aria-label={connectionBadge.label} /></div>
+        <div className={styles.sidebarBrand}><span className={styles.brandMark}><Mail size={18} /></span><strong>email2api</strong><span className={`status status-xs ${connectionBadge.status}`} aria-label={connectionBadge.label} /></div>
         <nav className={`tabs ${styles.accountTabs}`} role="tablist" aria-label="邮箱账号">
           <button role="tab" aria-selected={page === "messages" && !activeAccountId} className={`tab ${page === "messages" && !activeAccountId ? "tab-active" : ""} ${styles.accountTab} ${styles.accountTabWithIcon}`} onClick={() => openMailbox("")}>
             <span className={styles.accountTabIcon}><Inbox size={16} /></span><span className={`${styles.accountTabText} ${styles.aggregateTabText}`}><strong>聚合收件箱</strong><small className={styles.unreadCount} aria-label={`${totalUnread} 封未读`}>{totalUnread} 未读</small></span>
@@ -699,6 +699,7 @@ function MessagesPage({ api, accounts, accountId, onAccountChange, revision, onL
   const [confirmAll, setConfirmAll] = useState(false);
   const [listWidth, setListWidth] = useState(initialMessageListWidth);
   const [compactFilters, setCompactFilters] = useState(false);
+  const [autoLoadRemoteImages, setAutoLoadRemoteImages] = useState(false);
   const [remoteImageAllowlist, setRemoteImageAllowlist] = useState<string[]>([]);
   const [now, setNow] = useState(Date.now());
   const workspaceRef = useRef<HTMLElement | null>(null);
@@ -710,8 +711,8 @@ function MessagesPage({ api, accounts, accountId, onAccountChange, revision, onL
 
   useEffect(() => {
     api.request<Settings>("/settings")
-      .then((value) => { setPageSize(value.pageSize ?? 100); setRemoteImageAllowlist(value.remoteImageAllowlist ?? []); })
-      .catch((error) => { setPageSize(100); setRemoteImageAllowlist([]); onNotice({ kind: "error", text: error instanceof Error ? error.message : "分页设置加载失败" }); });
+      .then((value) => { setPageSize(value.pageSize ?? 100); setAutoLoadRemoteImages(value.autoLoadRemoteImages ?? false); setRemoteImageAllowlist(value.remoteImageAllowlist ?? []); })
+      .catch((error) => { setPageSize(100); setAutoLoadRemoteImages(false); setRemoteImageAllowlist([]); onNotice({ kind: "error", text: error instanceof Error ? error.message : "分页设置加载失败" }); });
   }, [api, onNotice]);
 
   const load = useCallback(async (background = false) => {
@@ -852,7 +853,7 @@ function MessagesPage({ api, accounts, accountId, onAccountChange, revision, onL
     </div>
     <ResizeHandle value={listWidth} min={MESSAGE_LIST_MIN_WIDTH} max={() => Math.max(MESSAGE_LIST_MIN_WIDTH, (workspaceRef.current?.clientWidth ?? window.innerWidth) - DETAIL_MIN_WIDTH)} label="调整邮件列表宽度" onChange={updateListWidth} />
     <div className={`${styles.detailPane} ${selected ? styles.detailVisible : ""}`}>
-      {detailLoading ? <div className={styles.centerState}><Spinner label="正在读取邮件" /></div> : detail ? <MessageDetailView api={api} message={detail} remoteImageAllowlist={remoteImageAllowlist} onBack={() => { setSelected(null); setDetail(null); }} onMark={(read) => void mark(detail, read)} /> : <EmptyState icon={<FileText size={28} />} title="选择一封邮件查看内容" />}
+      {detailLoading ? <div className={styles.centerState}><Spinner label="正在读取邮件" /></div> : detail ? <MessageDetailView api={api} message={detail} autoLoadRemoteImages={autoLoadRemoteImages} remoteImageAllowlist={remoteImageAllowlist} onBack={() => { setSelected(null); setDetail(null); }} onMark={(read) => void mark(detail, read)} /> : <EmptyState icon={<FileText size={28} />} title="选择一封邮件查看内容" />}
     </div>
     <ConfirmDialog open={confirmAll} title="将缓存邮件全部标记为已读？" description={accountId ? "操作会同步更新当前账号已缓存的收件箱和垃圾箱邮件。" : "操作会同步更新所有账号已缓存的收件箱和垃圾箱邮件。"} confirmLabel="全部已读" onOpenChange={setConfirmAll} onConfirm={() => void markAll()} />
   </section>;
@@ -924,7 +925,7 @@ export function formatAttachmentSize(size: number | null): string | null {
   return `${(size / (1024 * 1024)).toFixed(size < 10 * 1024 * 1024 ? 1 : 0)} MB`;
 }
 
-export function MessageDetailView({ api, message, remoteImageAllowlist = [], onBack, onMark }: { api: ApiClient; message: MessageDetail; remoteImageAllowlist?: string[]; onBack: () => void; onMark: (read: boolean) => void }) {
+export function MessageDetailView({ api, message, autoLoadRemoteImages = false, remoteImageAllowlist = [], onBack, onMark }: { api: ApiClient; message: MessageDetail; autoLoadRemoteImages?: boolean; remoteImageAllowlist?: string[]; onBack: () => void; onMark: (read: boolean) => void }) {
   const [remoteImagesForMessage, setRemoteImagesForMessage] = useState<string | null>(null);
   const [pendingLink, setPendingLink] = useState<{ url: string; label: string } | null>(null);
   const [unsubscribePending, setUnsubscribePending] = useState(false);
@@ -942,8 +943,8 @@ export function MessageDetailView({ api, message, remoteImageAllowlist = [], onB
   const metadataTransition = { duration: reducedMotion ? 0 : 0.14, ease: [0.23, 1, 0.32, 1] as const };
   const bodyLayoutTransition = { layout: { duration: reducedMotion ? 0 : 0.18, ease: [0.23, 1, 0.32, 1] as const } };
   const hasRemoteImages = useMemo(() => hasRemoteImageReferences(message.html ?? ""), [message.html]);
-  const autoLoadRemoteImages = useMemo(() => senderAllowsRemoteImages(message.from, remoteImageAllowlist), [message.from, remoteImageAllowlist]);
-  const remoteImagesLoaded = autoLoadRemoteImages || remoteImagesForMessage === message.id;
+  const senderAutoLoadsRemoteImages = useMemo(() => senderAllowsRemoteImages(message.from, remoteImageAllowlist), [message.from, remoteImageAllowlist]);
+  const remoteImagesLoaded = autoLoadRemoteImages || senderAutoLoadsRemoteImages || remoteImagesForMessage === message.id;
   const srcDoc = useMemo(() => message.html ? buildMessageSrcDoc(message.html, remoteImagesLoaded) : "", [message.html, remoteImagesLoaded]);
   useEffect(() => {
     setPendingLink(null);
@@ -1198,6 +1199,7 @@ function SettingsPage({ api, onNotice }: { api: ApiClient; onNotice: (notice: { 
   const [pageSize, setPageSize] = useState("100");
   const [maxConcurrentDownloads, setMaxConcurrentDownloads] = useState("3");
   const [maxAttachmentSizeMb, setMaxAttachmentSizeMb] = useState("100");
+  const [autoLoadRemoteImages, setAutoLoadRemoteImages] = useState(false);
   const [remoteImageAllowlist, setRemoteImageAllowlist] = useState<string[]>([]);
   const [remoteImageInput, setRemoteImageInput] = useState("");
   const [defaultSenderName, setDefaultSenderName] = useState("");
@@ -1211,6 +1213,7 @@ function SettingsPage({ api, onNotice }: { api: ApiClient; onNotice: (notice: { 
       setPageSize(String(result.pageSize ?? 100));
       setMaxConcurrentDownloads(String(result.maxConcurrentDownloads ?? 3));
       setMaxAttachmentSizeMb(String(result.maxAttachmentSizeMb ?? 100));
+      setAutoLoadRemoteImages(result.autoLoadRemoteImages ?? false);
       setRemoteImageAllowlist(result.remoteImageAllowlist ?? []);
       setDefaultSenderName(result.defaultSenderName ?? "");
     }).catch((error) => onNotice({ kind: "error", text: error.message }));
@@ -1231,7 +1234,7 @@ function SettingsPage({ api, onNotice }: { api: ApiClient; onNotice: (notice: { 
   };
   const save = async (event: FormEvent) => {
     event.preventDefault();
-    const pendingAddress = remoteImageInput.trim().toLowerCase();
+    const pendingAddress = autoLoadRemoteImages ? "" : remoteImageInput.trim().toLowerCase();
     if (pendingAddress && !remoteImageInputRef.current?.checkValidity()) {
       remoteImageInputRef.current?.reportValidity();
       return;
@@ -1253,6 +1256,7 @@ function SettingsPage({ api, onNotice }: { api: ApiClient; onNotice: (notice: { 
           pageSize: Number(pageSize),
           maxConcurrentDownloads: Number(maxConcurrentDownloads),
           maxAttachmentSizeMb: Number(maxAttachmentSizeMb),
+          autoLoadRemoteImages,
           remoteImageAllowlist: nextRemoteImageAllowlist,
           defaultSenderName
         })
@@ -1273,17 +1277,19 @@ function SettingsPage({ api, onNotice }: { api: ApiClient; onNotice: (notice: { 
     && Number(pageSize) === settings.pageSize
     && Number(maxConcurrentDownloads) === (settings.maxConcurrentDownloads ?? 3)
     && Number(maxAttachmentSizeMb) === (settings.maxAttachmentSizeMb ?? 100)
+    && autoLoadRemoteImages === (settings.autoLoadRemoteImages ?? false)
     && defaultSenderName === (settings.defaultSenderName ?? "")
     && JSON.stringify(remoteImageAllowlist) === JSON.stringify(settings.remoteImageAllowlist ?? [])
     && !remoteImageInput.trim();
   return <section className={styles.settingsSection}><div className={styles.sectionToolbar}><div><h2>同步与缓存</h2><p>全局邮件策略</p></div></div><form className={styles.settingsForm} onSubmit={save}>
-    <div className={`fieldset ${styles.settingsField}`}><label className="fieldset-legend" htmlFor="max-messages">每个账号最多保留</label><div className={styles.numberControl}><input className="input input-sm" id="max-messages" type="number" min="1" max="10000" value={value} onChange={(event) => setValue(event.target.value)} /><span>封邮件</span></div><p>收件箱和垃圾箱合计计算，超出后删除最旧的本地缓存。</p></div>
-    <div className={`fieldset ${styles.settingsField}`}><label className="fieldset-legend" htmlFor="page-size">邮件列表每页显示</label><div className={styles.numberControl}><input className="input input-sm" id="page-size" type="number" min="10" max="100" value={pageSize} onChange={(event) => setPageSize(event.target.value)} /><span>封邮件</span></div><p>控制邮件列表单页加载数量，范围为 10–100 封。</p></div>
-    <div className={`fieldset ${styles.settingsField}`}><label className="fieldset-legend" htmlFor="poll-interval">无 IDLE 时轮询间隔</label><div className={styles.numberControl}><input className="input input-sm" id="poll-interval" type="number" min="5" max="3600" value={interval} onChange={(event) => setIntervalValue(event.target.value)} /><span>秒</span></div><p>支持 IDLE 的邮箱保持实时长连接，此设置只用于不支持 IDLE 的服务器。</p></div>
-    <div className={`fieldset ${styles.settingsField}`}><label className="fieldset-legend" htmlFor="max-concurrent-downloads">附件并发下载</label><div className={styles.numberControl}><input className="input input-sm" id="max-concurrent-downloads" type="number" min="1" max="10" value={maxConcurrentDownloads} onChange={(event) => setMaxConcurrentDownloads(event.target.value)} /><span>个</span></div><p>所有邮箱账号共享，超过限制的下载请求会按顺序等待。</p></div>
-    <div className={`fieldset ${styles.settingsField}`}><label className="fieldset-legend" htmlFor="max-attachment-size">单附件大小上限</label><div className={styles.numberControl}><input className="input input-sm" id="max-attachment-size" type="number" min="1" max="1024" value={maxAttachmentSizeMb} onChange={(event) => setMaxAttachmentSizeMb(event.target.value)} /><span>MB</span></div><p>范围为 1–1024 MB，超过上限的附件不会开始下载。</p></div>
-    <div className={`fieldset ${styles.settingsField}`}><label className="fieldset-legend" htmlFor="default-sender-name">默认发件人名称</label><div className={styles.settingsValue}><input className="input input-sm" id="default-sender-name" maxLength={200} value={defaultSenderName} onChange={(event) => setDefaultSenderName(event.target.value)} placeholder="留空表示不设置" /><p>账号未设置专属名称时使用，写信时仍可修改。</p></div></div>
-    <div className={`fieldset ${styles.settingsField}`}><label className="fieldset-legend" htmlFor="remote-image-sender">自动加载图片发件人</label><div className={styles.settingsValue}><div className={styles.aliasInput}><input ref={remoteImageInputRef} className="input input-sm" id="remote-image-sender" type="email" maxLength={320} value={remoteImageInput} onChange={(event) => setRemoteImageInput(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === ",") { event.preventDefault(); addRemoteImageSender(); } }} placeholder="sender@example.com" /><IconButton type="button" label="添加图片白名单" disabled={!remoteImageInput.trim() || (remoteImageAllowlist.length >= 200 && !remoteImageAllowlist.includes(remoteImageInput.trim().toLowerCase()))} onClick={addRemoteImageSender}><Plus size={17} /></IconButton></div>{remoteImageAllowlist.length > 0 && <div className={styles.aliasList}>{remoteImageAllowlist.map((address) => <span className="badge badge-ghost badge-sm" key={address}>{address}<button type="button" aria-label={`移除图片白名单 ${address}`} onClick={() => setRemoteImageAllowlist((current) => current.filter((item) => item !== address))}><X size={14} /></button></span>)}</div>}<p>仅匹配完整发件人邮箱地址，最多 200 个；匹配后打开邮件会自动请求其中的远程图片。</p></div></div>
+    <div className={`fieldset ${styles.settingsField}`}><label className="fieldset-legend" htmlFor="max-messages">每个账号最多保留</label><div className={styles.numberControl}><input className="input input-sm" id="max-messages" type="number" min="1" max="10000" value={value} onChange={(event) => setValue(event.target.value)} /><span>封邮件</span></div></div>
+    <div className={`fieldset ${styles.settingsField}`}><label className="fieldset-legend" htmlFor="page-size">邮件列表每页显示</label><div className={styles.numberControl}><input className="input input-sm" id="page-size" type="number" min="10" max="100" value={pageSize} onChange={(event) => setPageSize(event.target.value)} /><span>封邮件</span></div></div>
+    <div className={`fieldset ${styles.settingsField}`}><label className="fieldset-legend" htmlFor="poll-interval">无 IDLE 时轮询间隔</label><div className={styles.numberControl}><input className="input input-sm" id="poll-interval" type="number" min="5" max="3600" value={interval} onChange={(event) => setIntervalValue(event.target.value)} /><span>秒</span></div></div>
+    <div className={`fieldset ${styles.settingsField}`}><label className="fieldset-legend" htmlFor="max-concurrent-downloads">附件并发下载</label><div className={styles.numberControl}><input className="input input-sm" id="max-concurrent-downloads" type="number" min="1" max="10" value={maxConcurrentDownloads} onChange={(event) => setMaxConcurrentDownloads(event.target.value)} /><span>个</span></div></div>
+    <div className={`fieldset ${styles.settingsField}`}><label className="fieldset-legend" htmlFor="max-attachment-size">单附件大小上限</label><div className={styles.numberControl}><input className="input input-sm" id="max-attachment-size" type="number" min="1" max="1024" value={maxAttachmentSizeMb} onChange={(event) => setMaxAttachmentSizeMb(event.target.value)} /><span>MB</span></div></div>
+    <div className={`fieldset ${styles.settingsField}`}><label className="fieldset-legend" htmlFor="default-sender-name">默认发件人名称</label><div className={styles.settingsValue}><input className="input input-sm" id="default-sender-name" maxLength={200} value={defaultSenderName} onChange={(event) => setDefaultSenderName(event.target.value)} placeholder="留空表示不设置" /></div></div>
+    <div className={`fieldset ${styles.settingsField}`}><label className="fieldset-legend" htmlFor="auto-load-remote-images">自动加载图片</label><div className={styles.settingsValue}><input className={styles.settingsToggle} id="auto-load-remote-images" type="checkbox" checked={autoLoadRemoteImages} onChange={(event) => { setAutoLoadRemoteImages(event.target.checked); if (event.target.checked) setRemoteImageInput(""); }} /></div></div>
+    <div className={`fieldset ${styles.settingsField} ${autoLoadRemoteImages ? styles.settingsFieldDisabled : ""}`}><label className="fieldset-legend" htmlFor="remote-image-sender">自动加载图片发件人</label><div className={styles.settingsValue}><div className={styles.aliasInput}><input ref={remoteImageInputRef} className="input input-sm" id="remote-image-sender" type="email" maxLength={320} value={remoteImageInput} disabled={autoLoadRemoteImages} onChange={(event) => setRemoteImageInput(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === ",") { event.preventDefault(); addRemoteImageSender(); } }} placeholder="sender@example.com" /><IconButton type="button" label="添加图片白名单" disabled={autoLoadRemoteImages || !remoteImageInput.trim() || (remoteImageAllowlist.length >= 200 && !remoteImageAllowlist.includes(remoteImageInput.trim().toLowerCase()))} onClick={addRemoteImageSender}><Plus size={17} /></IconButton></div>{remoteImageAllowlist.length > 0 && <div className={styles.aliasList}>{remoteImageAllowlist.map((address) => <span className="badge badge-ghost badge-sm" key={address}>{address}<button type="button" disabled={autoLoadRemoteImages} aria-label={`移除图片白名单 ${address}`} onClick={() => setRemoteImageAllowlist((current) => current.filter((item) => item !== address))}><X size={14} /></button></span>)}</div>}</div></div>
     <Button variant="primary" disabled={busy || unchanged}>{busy ? <Spinner label="正在保存" /> : "保存设置"}</Button>
   </form></section>;
 }

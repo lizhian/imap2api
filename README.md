@@ -1,4 +1,4 @@
-# imap2api
+# email2api
 
 将多个 IMAP 邮箱同步到本地加密 SQLite 缓存，并通过 Bearer Token API 和紧凑管理页面统一管理。
 
@@ -17,15 +17,15 @@
 直接使用 GHCR 发布的镜像：
 
 ```bash
-docker pull ghcr.io/lizhian/imap2api:latest
-docker volume create imap2api-data
+docker pull ghcr.io/lizhian/email2api:latest
+docker volume create email2api-data
 docker run -d \
-  --name imap2api \
+  --name email2api \
   --restart unless-stopped \
   -p 3000:3000 \
-  -v imap2api-data:/data \
-  -e IMAP2API_TOKEN='replace-with-at-least-32-private-characters' \
-  ghcr.io/lizhian/imap2api:latest
+  -v email2api-data:/data \
+  -e EMAIL2API_TOKEN='replace-with-at-least-32-private-characters' \
+  ghcr.io/lizhian/email2api:latest
 ```
 
 首次发布后，镜像的可见性由 GitHub Packages 设置控制。匿名拉取需要在仓库的 Package settings 中将包设为 `Public`。
@@ -34,13 +34,13 @@ docker run -d \
 
 ```bash
 cp .env.example .env
-# 将 .env 中的 IMAP2API_TOKEN 替换为私密随机值
+# 将 .env 中的 EMAIL2API_TOKEN 替换为私密随机值
 docker compose up -d --build
 ```
 
 打开 `http://localhost:3000`，输入与环境变量一致的 Token。Token 必须至少 32 个字符，并且已有数据库不能直接更换 Token。
 
-数据存储在 `imap2api-data` Docker volume。生产环境应在 HTTPS 反向代理后运行，避免 Bearer Token 经明文网络传输。
+数据存储在 `email2api-data` Docker volume。生产环境应在 HTTPS 反向代理后运行，避免 Bearer Token 经明文网络传输。
 
 ### 镜像标签
 
@@ -55,9 +55,9 @@ docker compose up -d --build
 
 ```bash
 npm install
-npm run build -w @imap2api/shared
-IMAP2API_TOKEN='replace-with-at-least-32-private-characters' \
-IMAP2API_DATA_DIR="$PWD/data" \
+npm run build -w @email2api/shared
+EMAIL2API_TOKEN='replace-with-at-least-32-private-characters' \
+EMAIL2API_DATA_DIR="$PWD/data" \
 npm run dev
 ```
 
@@ -73,8 +73,8 @@ npm run build
 
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
-| `IMAP2API_TOKEN` | 无 | 必填，至少 32 个字符，同时用于认证和密钥派生 |
-| `IMAP2API_DATA_DIR` | `/data` | SQLite 数据目录 |
+| `EMAIL2API_TOKEN` | 无 | 必填，至少 32 个字符，同时用于认证和密钥派生 |
+| `EMAIL2API_DATA_DIR` | `/data` | SQLite 数据目录 |
 | `PORT` | `3000` | HTTP 监听端口 |
 | `HOST` | `0.0.0.0` | HTTP 监听地址 |
 | `SYNC_INTERVAL_SECONDS` | `10` | 新数据库的无 IDLE 轮询初始值，范围 5–3600 秒；初始化后由系统设置管理 |
@@ -87,7 +87,7 @@ npm run build
 所有 `/api/v1` 请求都需要认证：
 
 ```bash
-curl -H "Authorization: Bearer $IMAP2API_TOKEN" \
+curl -H "Authorization: Bearer $EMAIL2API_TOKEN" \
   http://localhost:3000/api/v1/accounts
 ```
 
@@ -97,6 +97,7 @@ curl -H "Authorization: Bearer $IMAP2API_TOKEN" \
 | --- | --- | --- |
 | `POST` | `/api/v1/auth/verify` | 验证 Token |
 | `GET/POST` | `/api/v1/accounts` | 查询或新增账号 |
+| `PUT` | `/api/v1/accounts/order` | 更新账号显示顺序 |
 | `PATCH/DELETE` | `/api/v1/accounts/:id` | 更新或删除账号 |
 | `POST` | `/api/v1/accounts/:id/test` | 测试 IMAP 连接 |
 | `POST` | `/api/v1/accounts/:id/smtp/test` | 测试 SMTP 连接 |
@@ -109,15 +110,15 @@ curl -H "Authorization: Bearer $IMAP2API_TOKEN" \
 | `GET` | `/api/v1/messages/:id/attachments/:attachmentId` | 按需下载附件 |
 | `PATCH` | `/api/v1/messages/:id/read` | 标记已读或未读 |
 | `POST` | `/api/v1/accounts/:id/messages/read-all` | 当前账号缓存全部已读 |
-| `GET/PATCH` | `/api/v1/settings` | 查询或修改缓存、分页、轮询与附件下载限制 |
+| `GET/PATCH` | `/api/v1/settings` | 查询或修改缓存、分页、轮询、附件下载及远程图片策略 |
 | `GET` | `/api/v1/events` | 订阅邮件缓存和账号状态 SSE 事件 |
 
-邮件列表支持 `accountId`、`view=all|unread|junk`、`after`、`before`、`cursor` 和 `limit`。时间参数使用带时区的 ISO 8601 格式，`limit` 默认 100、最大 100；管理端使用系统设置中的分页大小。
+邮件列表支持 `accountId`、`view=all|unread|junk`、可重复的 `filter=verification_code|attachment|forwarded`、`after`、`before`、`cursor` 和 `limit`。时间参数使用带时区的 ISO 8601 格式，`limit` 默认 100、最大 100；管理端使用系统设置中的分页大小。
 
 SSE 使用相同的 Bearer Token，不接受 URL Token。连接建立后会先发送 `ready`，客户端收到 `messages.changed` 后可重新查询邮件列表：
 
 ```bash
-curl -N -H "Authorization: Bearer $IMAP2API_TOKEN" \
+curl -N -H "Authorization: Bearer $EMAIL2API_TOKEN" \
   http://localhost:3000/api/v1/events
 ```
 

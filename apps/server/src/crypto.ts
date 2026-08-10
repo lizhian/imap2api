@@ -11,7 +11,7 @@ export class CryptoService {
   ) {}
 
   static derive(token: string, salt: Buffer): CryptoService {
-    const material = scryptSync(token, Buffer.concat([salt, Buffer.from("imap2api:v1")]), 64);
+    const material = scryptSync(token, Buffer.concat([salt, Buffer.from("email2api:v1")]), 64);
     return new CryptoService(material.subarray(0, 32), material.subarray(32));
   }
 

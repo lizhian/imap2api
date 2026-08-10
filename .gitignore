@@ -142,7 +142,7 @@ vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 .vite/
 
-# imap2api runtime and test artifacts
+# email2api runtime and test artifacts
 data/
 *.db
 *.db-shm

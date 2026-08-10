@@ -16,7 +16,7 @@ const dirs: string[] = [];
 const token = "api-test-token-that-is-at-least-32-characters";
 
 function config(): AppConfig {
-  const dir = mkdtempSync(join(tmpdir(), "imap2api-api-")); dirs.push(dir);
+  const dir = mkdtempSync(join(tmpdir(), "email2api-api-")); dirs.push(dir);
   return { token, dataDir: dir, databasePath: join(dir, "api.db"), host: "127.0.0.1", port: 0, initialPollIntervalSeconds: 10, webDistPath: join(dir, "missing") };
 }
 
@@ -66,17 +66,19 @@ describe("HTTP API", () => {
     expect(invalidPageSize.statusCode).toBe(400);
     expect((await app.inject({ method: "PATCH", url: "/api/v1/settings", headers: { authorization: `Bearer ${token}` }, payload: { maxConcurrentDownloads: 11 } })).statusCode).toBe(400);
     expect((await app.inject({ method: "PATCH", url: "/api/v1/settings", headers: { authorization: `Bearer ${token}` }, payload: { maxAttachmentSizeMb: 1025 } })).statusCode).toBe(400);
+    expect((await app.inject({ method: "PATCH", url: "/api/v1/settings", headers: { authorization: `Bearer ${token}` }, payload: { autoLoadRemoteImages: "yes" } })).statusCode).toBe(400);
     const invalidAllowlist = await app.inject({ method: "PATCH", url: "/api/v1/settings", headers: { authorization: `Bearer ${token}` }, payload: { remoteImageAllowlist: ["not-an-email"] } });
     expect(invalidAllowlist.statusCode).toBe(400);
     const updated = await app.inject({ method: "PATCH", url: "/api/v1/settings", headers: { authorization: `Bearer ${token}` }, payload: {
       pollIntervalSeconds: 25,
       maxConcurrentDownloads: 4,
       maxAttachmentSizeMb: 200,
+      autoLoadRemoteImages: true,
       remoteImageAllowlist: [" Trusted@Example.com ", "trusted@example.com", "images@example.com"]
     } });
     expect(updated.json()).toEqual({
       maxMessagesPerAccount: 100, pollIntervalSeconds: 25, pageSize: 100, maxConcurrentDownloads: 4, maxAttachmentSizeMb: 200,
-      remoteImageAllowlist: ["trusted@example.com", "images@example.com"], defaultSenderName: ""
+      autoLoadRemoteImages: true, remoteImageAllowlist: ["trusted@example.com", "images@example.com"], defaultSenderName: ""
     });
     expect(applySettings).toHaveBeenCalledWith(10);
     await app.close();

@@ -4,7 +4,7 @@
 
 ## 项目概览
 
-imap2api 将多个 IMAP 邮箱同步到本地加密 SQLite 缓存，并通过 Fastify API 和 React 管理端提供访问能力。
+email2api 将多个 IMAP 邮箱同步到本地加密 SQLite 缓存，并通过 Fastify API 和 React 管理端提供访问能力。
 
 - `apps/server`：Fastify、ImapFlow、SQLite、SSE 和静态资源托管。
 - `apps/web`：React 19 + Vite 管理端。
@@ -110,15 +110,15 @@ npm run typecheck
 npm test
 npm run build
 npm audit --omit=dev --audit-level=high
-docker build -t imap2api:local .
+docker build -t email2api:local .
 ```
 
 聚焦验证可以使用：
 
 ```bash
-npm run typecheck -w @imap2api/server
-npm run test -w @imap2api/server -- src/imap.test.ts
-npm run test -w @imap2api/web
+npm run typecheck -w @email2api/server
+npm run test -w @email2api/server -- src/imap.test.ts
+npm run test -w @email2api/web
 ```
 
 ## 验证要求

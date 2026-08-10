@@ -1,4 +1,4 @@
-import type { Address, MessageLabel } from "@imap2api/shared";
+import type { Address, MessageLabel } from "@email2api/shared";
 import { DomUtils, parseDocument } from "htmlparser2";
 import { simpleParser, type AddressObject } from "mailparser";
 

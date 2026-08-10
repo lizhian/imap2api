@@ -17,7 +17,7 @@ afterEach(() => {
 function setup(sendResult = {
   messageId: "message-id", accepted: ["to@example.com"], rejected: [], pending: [], response: "250 OK", envelope: { from: "mail@gmail.com", to: ["to@example.com"] }
 }) {
-  const dir = mkdtempSync(join(tmpdir(), "imap2api-smtp-")); dirs.push(dir);
+  const dir = mkdtempSync(join(tmpdir(), "email2api-smtp-")); dirs.push(dir);
   const db = new AppDatabase(join(dir, "smtp.db"), "s".repeat(32));
   db.updateSettings({ defaultSenderName: "System Sender" });
   const account = db.createAccount({
@@ -62,6 +62,29 @@ describe("SMTP service", () => {
     db.close();
   });
 
+  it("preserves rich text and safe email table markup", async () => {
+    const { db, account, transport, service } = setup();
+    await service.send({
+      accountId: account.id, fromAddress: account.email, to: ["to@example.com"], subject: "Rich content",
+      html: '<h2>Summary</h2><blockquote>Quoted</blockquote><p><s>Removed</s></p><hr>'
+        + '<table style="border-collapse: collapse; width: 100%; table-layout: fixed; position: fixed" onclick="bad()"><tbody><tr>'
+        + '<th style="border: 1px solid #d1d5db; padding: 6px 8px; vertical-align: top; background-color: #f3f4f6; text-align: left">Name</th>'
+        + '<td style="border: 1px solid #d1d5db; padding: 6px 8px; vertical-align: top">Value</td>'
+        + '</tr></tbody></table>'
+    }, []);
+
+    const html = transport.sendMail.mock.calls[0]![0].html as string;
+    expect(html).toContain("<h2>Summary</h2>");
+    expect(html).toContain("<blockquote>Quoted</blockquote>");
+    expect(html).toContain("<s>Removed</s>");
+    expect(html).toContain("<table");
+    expect(html).toContain("border-collapse:collapse");
+    expect(html).toContain("background-color:#f3f4f6");
+    expect(html).not.toContain("position");
+    expect(html).not.toContain("onclick");
+    db.close();
+  });
+
   it("returns partial rejection details and rejects an invalid from address", async () => {
     const { db, account, service } = setup({
       messageId: "partial", accepted: ["ok@example.com"], rejected: ["bad@example.com"], pending: [], response: "250 OK",
@@ -100,7 +123,7 @@ describe("SMTP service", () => {
   });
 
   it("destroys the active SMTP socket when a send is cancelled", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "imap2api-smtp-")); dirs.push(dir);
+    const dir = mkdtempSync(join(tmpdir(), "email2api-smtp-")); dirs.push(dir);
     const db = new AppDatabase(join(dir, "smtp.db"), "s".repeat(32));
     const account = db.createAccount({ email: "mail@gmail.com", password: "app-password" });
     let sendStarted: (() => void) | null = null;
@@ -135,7 +158,7 @@ describe("SMTP service", () => {
   });
 
   it("destroys active SMTP sockets when the service stops", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "imap2api-smtp-")); dirs.push(dir);
+    const dir = mkdtempSync(join(tmpdir(), "email2api-smtp-")); dirs.push(dir);
     const db = new AppDatabase(join(dir, "smtp.db"), "s".repeat(32));
     const account = db.createAccount({ email: "mail@gmail.com", password: "app-password" });
     let activeSocket: NonNullable<SMTPTransport.Options["socket"]> | null = null;

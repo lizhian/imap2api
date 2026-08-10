@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type ComponentProps, type DragEvent as ReactDragEvent, type FormEvent, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { EditorContent, useEditor } from "@tiptap/react";
+import { TableKit } from "@tiptap/extension-table";
 import StarterKit from "@tiptap/starter-kit";
 import {
-  Bold, Check, CircleAlert, Italic, Link2, List, ListOrdered, Paperclip, Redo2, RefreshCw, Send,
-  Underline as UnderlineIcon, Undo2, X
+  BetweenHorizontalEnd, BetweenVerticalEnd, Bold, Check, CircleAlert, Columns2, Italic, Link2, List,
+  ListOrdered, Minus, Paperclip, Quote, Redo2, RefreshCw, Rows2, Send, Strikethrough, Table2,
+  TableProperties, Trash2, Underline as UnderlineIcon, Undo2, X
 } from "lucide-react";
-import type { Account, SendMailInput, SendMailResult, Settings } from "@imap2api/shared";
+import type { Account, SendMailInput, SendMailResult, Settings } from "@email2api/shared";
 import { ApiClient } from "./api";
 import { Button, EmptyState, IconButton, Spinner } from "./components";
 import styles from "./styles.module.css";
@@ -21,7 +23,7 @@ type RecipientState = Record<RecipientKind, string[]>;
 type RecipientDraftState = Record<RecipientKind, string>;
 
 const RECIPIENT_KINDS: RecipientKind[] = ["to", "cc", "bcc"];
-const RECIPIENT_DRAG_TYPE = "application/x-imap2api-recipient";
+const RECIPIENT_DRAG_TYPE = "application/x-email2api-recipient";
 const emptyRecipients = (): RecipientState => ({ to: [], cc: [], bcc: [] });
 const emptyRecipientDrafts = (): RecipientDraftState => ({ to: "", cc: "", bcc: "" });
 
@@ -46,9 +48,17 @@ export function ComposePage({ api, accounts, onNotice }: ComposePageProps) {
   const editor = useEditor({
     shouldRerenderOnTransaction: true,
     extensions: [StarterKit.configure({
-      blockquote: false, code: false, codeBlock: false, heading: false, horizontalRule: false,
-      strike: false, dropcursor: false, gapcursor: false, trailingNode: false,
+      code: false, codeBlock: false, heading: { levels: [1, 2, 3] },
+      dropcursor: false, trailingNode: false,
       link: { openOnClick: false, autolink: false, linkOnPaste: true }
+    }), TableKit.configure({
+      table: {
+        resizable: false,
+        HTMLAttributes: { style: "border-collapse: collapse; width: 100%; table-layout: fixed;" }
+      },
+      tableCell: { HTMLAttributes: { style: "border: 1px solid #d1d5db; padding: 6px 8px; vertical-align: top;" } },
+      tableHeader: { HTMLAttributes: { style: "border: 1px solid #d1d5db; padding: 6px 8px; vertical-align: top; background-color: #f3f4f6; text-align: left;" } },
+      tableRow: {}
     })],
     content: "",
     editorProps: { attributes: { class: styles.composeEditorContent!, "aria-label": "邮件正文" } }
@@ -244,12 +254,31 @@ export function ComposePage({ api, accounts, onNotice }: ComposePageProps) {
           </div>
           <div className={styles.composeEditor}>
             <div className={styles.composeToolbar} aria-label="正文格式工具栏">
+              <select className={styles.composeBlockSelect} aria-label="段落样式" value={editor?.isActive("heading", { level: 1 }) ? "h1" : editor?.isActive("heading", { level: 2 }) ? "h2" : editor?.isActive("heading", { level: 3 }) ? "h3" : "paragraph"} disabled={busy} onChange={(event) => {
+                const value = event.target.value;
+                if (value === "paragraph") editor?.chain().focus().setParagraph().run();
+                else editor?.chain().focus().setHeading({ level: Number(value.slice(1)) as 1 | 2 | 3 }).run();
+              }}><option value="paragraph">正文</option><option value="h1">标题 1</option><option value="h2">标题 2</option><option value="h3">标题 3</option></select>
+              <span className={styles.composeToolbarDivider} />
               <FormatButton label="粗体" active={editor?.isActive("bold")} disabled={busy} onClick={() => editor?.chain().focus().toggleBold().run()}><Bold size={16} /></FormatButton>
               <FormatButton label="斜体" active={editor?.isActive("italic")} disabled={busy} onClick={() => editor?.chain().focus().toggleItalic().run()}><Italic size={16} /></FormatButton>
               <FormatButton label="下划线" active={editor?.isActive("underline")} disabled={busy} onClick={() => editor?.chain().focus().toggleUnderline().run()}><UnderlineIcon size={16} /></FormatButton>
+              <FormatButton label="删除线" active={editor?.isActive("strike")} disabled={busy} onClick={() => editor?.chain().focus().toggleStrike().run()}><Strikethrough size={16} /></FormatButton>
               <FormatButton label="项目列表" active={editor?.isActive("bulletList")} disabled={busy} onClick={() => editor?.chain().focus().toggleBulletList().run()}><List size={16} /></FormatButton>
               <FormatButton label="编号列表" active={editor?.isActive("orderedList")} disabled={busy} onClick={() => editor?.chain().focus().toggleOrderedList().run()}><ListOrdered size={16} /></FormatButton>
+              <FormatButton label="引用" active={editor?.isActive("blockquote")} disabled={busy} onClick={() => editor?.chain().focus().toggleBlockquote().run()}><Quote size={16} /></FormatButton>
+              <FormatButton label="分隔线" disabled={busy} onClick={() => editor?.chain().focus().setHorizontalRule().run()}><Minus size={16} /></FormatButton>
               <FormatButton label="链接" active={editor?.isActive("link")} disabled={busy} onClick={() => { setLinkValue(editor?.getAttributes("link").href ?? ""); setLinkEditorOpen((value) => !value); }}><Link2 size={16} /></FormatButton>
+              <span className={styles.composeToolbarDivider} />
+              <FormatButton label="插入表格" active={editor?.isActive("table")} disabled={busy || editor?.isActive("table")} onClick={() => editor?.chain().focus().insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run()}><Table2 size={16} /></FormatButton>
+              {editor?.isActive("table") && <div className={styles.composeTableTools} aria-label="表格工具">
+                <FormatButton label="下方添加行" disabled={busy || !editor.can().addRowAfter()} onClick={() => editor.chain().focus().addRowAfter().run()}><BetweenHorizontalEnd size={16} /></FormatButton>
+                <FormatButton label="右侧添加列" disabled={busy || !editor.can().addColumnAfter()} onClick={() => editor.chain().focus().addColumnAfter().run()}><BetweenVerticalEnd size={16} /></FormatButton>
+                <FormatButton label="删除当前行" disabled={busy || !editor.can().deleteRow()} onClick={() => editor.chain().focus().deleteRow().run()}><Rows2 size={16} /></FormatButton>
+                <FormatButton label="删除当前列" disabled={busy || !editor.can().deleteColumn()} onClick={() => editor.chain().focus().deleteColumn().run()}><Columns2 size={16} /></FormatButton>
+                <FormatButton label="切换表头行" disabled={busy || !editor.can().toggleHeaderRow()} onClick={() => editor.chain().focus().toggleHeaderRow().run()}><TableProperties size={16} /></FormatButton>
+                <FormatButton label="删除表格" disabled={busy || !editor.can().deleteTable()} onClick={() => editor.chain().focus().deleteTable().run()}><Trash2 size={16} /></FormatButton>
+              </div>}
               <span className={styles.composeToolbarSpacer} />
               <FormatButton label="撤销" disabled={busy || !editor?.can().chain().focus().undo().run()} onClick={() => editor?.chain().focus().undo().run()}><Undo2 size={16} /></FormatButton>
               <FormatButton label="重做" disabled={busy || !editor?.can().chain().focus().redo().run()} onClick={() => editor?.chain().focus().redo().run()}><Redo2 size={16} /></FormatButton>

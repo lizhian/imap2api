@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import type { Account, MessageDetail, MessageSummary } from "@imap2api/shared";
+import type { Account, MessageDetail, MessageSummary } from "@email2api/shared";
 import { App, buildMessageSrcDoc, canShowFullForwardedVia, formatRelativeDate, hasRemoteImageReferences, MessageDetailView, senderAllowsRemoteImages } from "./App";
 import { ApiClient } from "./api";
 
@@ -14,7 +14,7 @@ describe("App authentication", () => {
     render(<App />);
     fireEvent.change(screen.getByLabelText("访问 Token"), { target: { value: "valid-token" } });
     fireEvent.click(screen.getByRole("button", { name: "进入管理" }));
-    await waitFor(() => expect(sessionStorage.getItem("imap2api-token")).toBe("valid-token"));
+    await waitFor(() => expect(sessionStorage.getItem("email2api-token")).toBe("valid-token"));
   });
 
   it("shows a local error for an invalid token", async () => {
@@ -27,7 +27,7 @@ describe("App authentication", () => {
 
   it("shows the persistent connection mode for an account", async () => {
     location.hash = "accounts";
-    sessionStorage.setItem("imap2api-token", "valid-token");
+    sessionStorage.setItem("email2api-token", "valid-token");
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       const json = async () => url.endsWith("/accounts") ? [{
@@ -64,7 +64,7 @@ describe("App authentication", () => {
   });
 
   it("uses sidebar account tabs to filter the message list", async () => {
-    sessionStorage.setItem("imap2api-token", "valid-token");
+    sessionStorage.setItem("email2api-token", "valid-token");
     vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(1000);
     const account = {
       id: "account-1", email: "operations@example.com", aliases: [], provider: "gmail",
@@ -104,12 +104,12 @@ describe("App authentication", () => {
     fireEvent.keyDown(messageListSeparator, { key: "ArrowRight" });
     await waitFor(() => expect(sidebarSeparator).toHaveAttribute("aria-valuenow", "208"));
     await waitFor(() => expect(messageListSeparator).toHaveAttribute("aria-valuenow", "328"));
-    expect(JSON.parse(localStorage.getItem("imap2api-layout-widths") ?? "{}")).toEqual({ sidebar: 208, messageList: 328 });
+    expect(JSON.parse(localStorage.getItem("email2api-layout-widths") ?? "{}")).toEqual({ sidebar: 208, messageList: 328 });
   });
 
   it("restores valid column widths and ignores a damaged layout record", async () => {
-    sessionStorage.setItem("imap2api-token", "valid-token");
-    localStorage.setItem("imap2api-layout-widths", JSON.stringify({ sidebar: 232, messageList: 408 }));
+    sessionStorage.setItem("email2api-token", "valid-token");
+    localStorage.setItem("email2api-layout-widths", JSON.stringify({ sidebar: 232, messageList: 408 }));
     vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(1000);
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
@@ -127,7 +127,7 @@ describe("App authentication", () => {
     expect(screen.getByRole("separator", { name: "调整邮件列表宽度" })).toHaveAttribute("aria-valuenow", "408");
 
     mounted.unmount();
-    localStorage.setItem("imap2api-layout-widths", "{damaged");
+    localStorage.setItem("email2api-layout-widths", "{damaged");
     render(<App />);
     expect(await screen.findByRole("separator", { name: "调整邮箱栏宽度" })).toHaveAttribute("aria-valuenow", "200");
     expect(screen.getByRole("separator", { name: "调整邮件列表宽度" })).toHaveAttribute("aria-valuenow", "320");
@@ -135,7 +135,7 @@ describe("App authentication", () => {
 
   it("reorders accounts from the drag handle keyboard controls", async () => {
     location.hash = "accounts";
-    sessionStorage.setItem("imap2api-token", "valid-token");
+    sessionStorage.setItem("email2api-token", "valid-token");
     let accounts = [
       {
         id: "11111111-1111-4111-8111-111111111111", email: "first@example.com", aliases: [], provider: "gmail",
@@ -181,7 +181,7 @@ describe("App authentication", () => {
 
   it("configures custom folder polling or IDLE and confirms cached folder removal", async () => {
     location.hash = "accounts";
-    sessionStorage.setItem("imap2api-token", "valid-token");
+    sessionStorage.setItem("email2api-token", "valid-token");
     vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });
     const account = {
       id: "11111111-1111-4111-8111-111111111111", email: "folders@example.com", aliases: [], provider: "custom",
@@ -221,14 +221,14 @@ describe("App authentication", () => {
 
   it("loads and saves global synchronization and pagination settings", async () => {
     location.hash = "settings";
-    sessionStorage.setItem("imap2api-token", "valid-token");
+    sessionStorage.setItem("email2api-token", "valid-token");
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (url.endsWith("/settings") && init?.method === "PATCH") {
         return { ok: true, status: 200, body: null, json: async () => JSON.parse(String(init.body)) } as Response;
       }
       const json = async () => url.endsWith("/settings")
-        ? { maxMessagesPerAccount: 100, pollIntervalSeconds: 10, pageSize: 100, maxConcurrentDownloads: 3, maxAttachmentSizeMb: 100, remoteImageAllowlist: ["images@example.com"], defaultSenderName: "System Sender" }
+        ? { maxMessagesPerAccount: 100, pollIntervalSeconds: 10, pageSize: 100, maxConcurrentDownloads: 3, maxAttachmentSizeMb: 100, autoLoadRemoteImages: false, remoteImageAllowlist: ["images@example.com"], defaultSenderName: "System Sender" }
         : url.endsWith("/accounts") ? [] : { ok: true };
       return { ok: true, status: 200, body: null, json } as Response;
     });
@@ -240,9 +240,15 @@ describe("App authentication", () => {
     const pageSize = screen.getByLabelText("邮件列表每页显示");
     const maxConcurrentDownloads = screen.getByLabelText("附件并发下载");
     const maxAttachmentSize = screen.getByLabelText("单附件大小上限");
+    const autoLoadRemoteImages = screen.getByRole("checkbox", { name: "自动加载图片" });
     const remoteImageSender = screen.getByLabelText("自动加载图片发件人");
     const defaultSenderName = screen.getByLabelText("默认发件人名称");
     expect(screen.getByText("images@example.com")).toBeInTheDocument();
+    fireEvent.click(autoLoadRemoteImages);
+    expect(remoteImageSender).toBeDisabled();
+    expect(screen.getByRole("button", { name: "移除图片白名单 images@example.com" })).toBeDisabled();
+    fireEvent.click(autoLoadRemoteImages);
+    expect(remoteImageSender).toBeEnabled();
     fireEvent.change(max, { target: { value: "80" } });
     fireEvent.change(interval, { target: { value: "25" } });
     fireEvent.change(pageSize, { target: { value: "60" } });
@@ -256,14 +262,14 @@ describe("App authentication", () => {
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/v1/settings", expect.objectContaining({
       method: "PATCH", body: JSON.stringify({
         maxMessagesPerAccount: 80, pollIntervalSeconds: 25, pageSize: 60, maxConcurrentDownloads: 4, maxAttachmentSizeMb: 200,
-        remoteImageAllowlist: ["trusted@example.com"], defaultSenderName: "Operations"
+        autoLoadRemoteImages: false, remoteImageAllowlist: ["trusted@example.com"], defaultSenderName: "Operations"
       })
     })));
   });
 
   it("composes rich mail with an alias and multipart attachments", async () => {
     location.hash = "compose";
-    sessionStorage.setItem("imap2api-token", "valid-token");
+    sessionStorage.setItem("email2api-token", "valid-token");
     const account = {
       id: "11111111-1111-4111-8111-111111111111", email: "sender@gmail.com", aliases: ["alias@gmail.com"], provider: "gmail",
       imap: { host: "imap.gmail.com", port: 993, secure: true }, smtp: { host: "smtp.gmail.com", port: 465, secure: true },
@@ -293,13 +299,19 @@ describe("App authentication", () => {
     expect(screen.getByLabelText("发件人名称")).toHaveValue("Account Sender");
     expect(screen.getByRole("group", { name: "发件人" })).toHaveTextContent("Account Sendersender@gmail.com");
     expect(screen.getByLabelText("发件人名称").compareDocumentPosition(screen.getByRole("listbox", { name: "发件人邮箱" })) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(screen.getAllByRole("option").map((option) => option.textContent)).toEqual(["sender@gmail.com", "alias@gmail.com", "other@gmail.com"]);
+    expect(within(screen.getByRole("listbox", { name: "发件人邮箱" })).getAllByRole("option").map((option) => option.textContent)).toEqual(["sender@gmail.com", "alias@gmail.com", "other@gmail.com"]);
     expect(screen.queryByRole("textbox", { name: "抄送" })).not.toBeInTheDocument();
     expect(screen.queryByRole("textbox", { name: "密送" })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "抄送" }));
     fireEvent.click(screen.getByRole("button", { name: "密送" }));
     expect(screen.getByRole("textbox", { name: "抄送" })).toBeInTheDocument();
     expect(screen.getByRole("textbox", { name: "密送" })).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("段落样式"), { target: { value: "h2" } });
+    expect(screen.getByLabelText("段落样式")).toHaveValue("h2");
+    fireEvent.click(screen.getByRole("button", { name: "插入表格" }));
+    expect(await screen.findByRole("button", { name: "下方添加行" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "右侧添加列" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "删除表格" })).toBeEnabled();
     fireEvent.click(screen.getByRole("button", { name: "项目列表" }));
     await waitFor(() => expect(screen.getByRole("button", { name: "项目列表" })).toHaveAttribute("aria-pressed", "true"));
     fireEvent.change(screen.getByLabelText("发件人名称"), { target: { value: "Temporary Sender" } });
@@ -345,16 +357,18 @@ describe("App authentication", () => {
     const init = sendCall[1] as RequestInit;
     expect(init.headers).toEqual({ Authorization: "Bearer valid-token" });
     const form = init.body as FormData;
-    expect(JSON.parse(String(form.get("message")))).toMatchObject({
+    const sentMessage = JSON.parse(String(form.get("message")));
+    expect(sentMessage).toMatchObject({
       accountId: account.id, fromAddress: "alias@gmail.com", senderName: "Account Sender",
       to: ["to@example.com"], cc: ["move@example.com"], bcc: ["hidden@example.com"], subject: "Report"
     });
+    expect(sentMessage.html).toContain("<table");
     expect((form.getAll("attachments")[0] as File).name).toBe("report.pdf");
   });
 
   it("shows a retry state when compose settings fail to load", async () => {
     location.hash = "compose";
-    sessionStorage.setItem("imap2api-token", "valid-token");
+    sessionStorage.setItem("email2api-token", "valid-token");
     const account = {
       id: "11111111-1111-4111-8111-111111111111", email: "sender@gmail.com", aliases: [], provider: "gmail",
       imap: { host: "imap.gmail.com", port: 993, secure: true }, smtp: { host: "smtp.gmail.com", port: 465, secure: true },
@@ -424,7 +438,7 @@ describe("message list interactions", () => {
   };
 
   it("shows the current page, total pages and filtered message total", async () => {
-    sessionStorage.setItem("imap2api-token", "valid-token");
+    sessionStorage.setItem("email2api-token", "valid-token");
     const eventStream = new ReadableStream<Uint8Array>({ start() {} });
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
@@ -448,7 +462,7 @@ describe("message list interactions", () => {
   });
 
   it("opens an unread message without refreshing the list and marks it as read", async () => {
-    sessionStorage.setItem("imap2api-token", "valid-token");
+    sessionStorage.setItem("email2api-token", "valid-token");
     let eventController!: ReadableStreamDefaultController<Uint8Array>;
     const eventStream = new ReadableStream<Uint8Array>({ start(controller) { eventController = controller; } });
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -495,7 +509,7 @@ describe("message list interactions", () => {
   });
 
   it("allows all cached mail to be marked as read from the aggregate inbox", async () => {
-    sessionStorage.setItem("imap2api-token", "valid-token");
+    sessionStorage.setItem("email2api-token", "valid-token");
     const accounts = [account("account-1", "first@example.com"), account("account-2", "second@example.com")];
     const eventStream = new ReadableStream<Uint8Array>({ start() {} });
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
@@ -522,7 +536,7 @@ describe("message list interactions", () => {
   });
 
   it("collapses content filters only when their measured buttons do not fit", async () => {
-    sessionStorage.setItem("imap2api-token", "valid-token");
+    sessionStorage.setItem("email2api-token", "valid-token");
     const widths = new WeakMap<HTMLElement, number>();
     const resizeCallbacks: ResizeObserverCallback[] = [];
     vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockImplementation(function (this: HTMLElement) { return widths.get(this) ?? 0; });
@@ -573,7 +587,7 @@ describe("message list interactions", () => {
   });
 
   it("combines a message view with multiple content filters and refreshes in place", async () => {
-    sessionStorage.setItem("imap2api-token", "valid-token");
+    sessionStorage.setItem("email2api-token", "valid-token");
     const eventStream = new ReadableStream<Uint8Array>({ start() {} });
     let resolveRefresh: (() => void) | null = null;
     let blockRefresh = false;
@@ -612,7 +626,7 @@ describe("message list interactions", () => {
   });
 
   it("keeps the full forwarding mailbox available when the compact label falls back", async () => {
-    sessionStorage.setItem("imap2api-token", "valid-token");
+    sessionStorage.setItem("email2api-token", "valid-token");
     const eventStream = new ReadableStream<Uint8Array>({ start() {} });
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
@@ -679,6 +693,19 @@ describe("mail body isolation", () => {
     view.rerender(<MessageDetailView api={detailApi} message={{ ...message, id: "message-untrusted" }} remoteImageAllowlist={["other@example.test"]} onBack={vi.fn()} onMark={vi.fn()} />);
     expect((screen.getByTitle("邮件正文") as HTMLIFrameElement).srcdoc).toContain("img-src data:;");
     expect(screen.getByRole("button", { name: "加载图片" })).toBeEnabled();
+  });
+
+  it("automatically loads remote images for every sender when the global setting is enabled", () => {
+    const message: MessageDetail = {
+      id: "message-global-images", accountId: "account-1", accountEmail: "mail@example.test", subject: "Global images",
+      from: [{ address: "unknown@example.test" }], to: [{ address: "mail@example.test" }], cc: [], preview: "", displayTime: "2026-01-01T00:00:00.000Z",
+      folder: "inbox", read: true, hasAttachments: false, attachments: [], labels: [], forwardedVia: null,
+      verificationCode: null, unsubscribeUrl: null, text: "", html: '<img data-remote-src="https://images.example.test/a.png">'
+    };
+    render(<MessageDetailView api={detailApi} message={message} autoLoadRemoteImages onBack={vi.fn()} onMark={vi.fn()} />);
+
+    expect((screen.getByTitle("邮件正文") as HTMLIFrameElement).srcdoc).toContain("img-src data: http: https:");
+    expect(screen.getByRole("button", { name: "图片已加载" })).toBeDisabled();
   });
 
   it("loads images only for the selected message and confirms body links", async () => {

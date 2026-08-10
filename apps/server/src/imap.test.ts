@@ -143,7 +143,7 @@ afterEach(() => {
 
 describe("ImapService", () => {
   it("finishes the metadata fetch before requesting message bodies", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "imap2api-imap-"));
+    const dir = mkdtempSync(join(tmpdir(), "email2api-imap-"));
     dirs.push(dir);
     const db = new AppDatabase(join(dir, "test.db"), "t".repeat(32));
     const account = db.createAccount({ email: "mail@qq.com", password: "authorization-code" });
@@ -159,7 +159,7 @@ describe("ImapService", () => {
   });
 
   it("fetches only the retained sequence window without SEARCH ALL", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "imap2api-window-"));
+    const dir = mkdtempSync(join(tmpdir(), "email2api-window-"));
     dirs.push(dir);
     const db = new AppDatabase(join(dir, "test.db"), "t".repeat(32));
     const account = db.createAccount({ email: "mail@qq.com", password: "authorization-code" });
@@ -180,7 +180,7 @@ describe("ImapService", () => {
   });
 
   it("keeps one IDLE connection per mapped folder", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "imap2api-idle-")); dirs.push(dir);
+    const dir = mkdtempSync(join(tmpdir(), "email2api-idle-")); dirs.push(dir);
     const db = new AppDatabase(join(dir, "test.db"), "t".repeat(32));
     const account = db.createAccount({ email: "mail@qq.com", password: "authorization-code" });
     const clients: DeadlockDetectingClient[] = [];
@@ -200,7 +200,7 @@ describe("ImapService", () => {
   });
 
   it("polls at the exact configured interval and reschedules without reconnecting", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "imap2api-poll-")); dirs.push(dir);
+    const dir = mkdtempSync(join(tmpdir(), "email2api-poll-")); dirs.push(dir);
     const db = new AppDatabase(join(dir, "test.db"), "t".repeat(32));
     const account = db.createAccount({ email: "mail@qq.com", password: "authorization-code" });
     db.updateSettings({ pollIntervalSeconds: 3600 });
@@ -234,7 +234,7 @@ describe("ImapService", () => {
   });
 
   it("discovers selectable mailboxes and preserves configured missing folders", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "imap2api-mailboxes-")); dirs.push(dir);
+    const dir = mkdtempSync(join(tmpdir(), "email2api-mailboxes-")); dirs.push(dir);
     const db = new AppDatabase(join(dir, "test.db"), "t".repeat(32));
     const account = db.createAccount({ email: "mail@qq.com", password: "authorization-code" });
     db.updateSyncFolders(account.id, [{ path: "Missing/Relay", mode: "idle" }]);
@@ -256,7 +256,7 @@ describe("ImapService", () => {
   });
 
   it("shares one connection for polling custom folders and keeps IDLE folders independent", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "imap2api-custom-sessions-")); dirs.push(dir);
+    const dir = mkdtempSync(join(tmpdir(), "email2api-custom-sessions-")); dirs.push(dir);
     const db = new AppDatabase(join(dir, "test.db"), "t".repeat(32));
     const account = db.createAccount({ email: "mail@qq.com", password: "authorization-code" });
     db.updateSyncFolders(account.id, [
@@ -280,7 +280,7 @@ describe("ImapService", () => {
   });
 
   it("serializes duplicate manual syncs and handles mailbox notifications on the persistent session", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "imap2api-events-")); dirs.push(dir);
+    const dir = mkdtempSync(join(tmpdir(), "email2api-events-")); dirs.push(dir);
     const db = new AppDatabase(join(dir, "test.db"), "t".repeat(32));
     const account = db.createAccount({ email: "mail@qq.com", password: "authorization-code" });
     const clients: DeadlockDetectingClient[] = [];
@@ -319,7 +319,7 @@ describe("ImapService", () => {
   });
 
   it("does not let the healthy junk session mask an inbox disconnect", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "imap2api-disconnect-")); dirs.push(dir);
+    const dir = mkdtempSync(join(tmpdir(), "email2api-disconnect-")); dirs.push(dir);
     const db = new AppDatabase(join(dir, "test.db"), "t".repeat(32));
     const account = db.createAccount({ email: "mail@qq.com", password: "authorization-code" });
     const clients: DeadlockDetectingClient[] = [];
@@ -343,7 +343,7 @@ describe("ImapService", () => {
   });
 
   it.each(["lock", "store"] as const)("keeps successful folders when mark-all-read hits a junk %s failure", async (failure) => {
-    const dir = mkdtempSync(join(tmpdir(), "imap2api-read-all-")); dirs.push(dir);
+    const dir = mkdtempSync(join(tmpdir(), "email2api-read-all-")); dirs.push(dir);
     const db = new AppDatabase(join(dir, "test.db"), "t".repeat(32));
     const account = db.createAccount({ email: "mail@qq.com", password: "authorization-code" });
     let failJunk = false;
@@ -365,7 +365,7 @@ describe("ImapService", () => {
   });
 
   it("marks unread messages in each real custom mailbox path", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "imap2api-custom-read-all-")); dirs.push(dir);
+    const dir = mkdtempSync(join(tmpdir(), "email2api-custom-read-all-")); dirs.push(dir);
     const db = new AppDatabase(join(dir, "test.db"), "t".repeat(32));
     const account = db.createAccount({ email: "mail@qq.com", password: "authorization-code" });
     for (const [mailboxPath, uid] of [["Relay/A", 1], ["Relay/B", 1]] as const) {
@@ -385,7 +385,7 @@ describe("ImapService", () => {
   });
 
   it("streams a stored MIME part from its real mailbox and rejects stale or oversized references", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "imap2api-download-")); dirs.push(dir);
+    const dir = mkdtempSync(join(tmpdir(), "email2api-download-")); dirs.push(dir);
     const db = new AppDatabase(join(dir, "test.db"), "t".repeat(32));
     const account = db.createAccount({ email: "mail@qq.com", password: "authorization-code" });
     const messageId = db.upsertMessage({
@@ -439,7 +439,7 @@ describe("ImapService", () => {
   });
 
   it("does not leave manual synchronization running while discovery retries", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "imap2api-discovery-")); dirs.push(dir);
+    const dir = mkdtempSync(join(tmpdir(), "email2api-discovery-")); dirs.push(dir);
     const db = new AppDatabase(join(dir, "test.db"), "t".repeat(32));
     const account = db.createAccount({ email: "mail@qq.com", password: "authorization-code" });
     const service = new ImapService(db, new EventBroker(), () => {
@@ -457,7 +457,7 @@ describe("ImapService", () => {
   });
 
   it("does not create sessions after discovery is stopped", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "imap2api-discovery-stop-")); dirs.push(dir);
+    const dir = mkdtempSync(join(tmpdir(), "email2api-discovery-stop-")); dirs.push(dir);
     const db = new AppDatabase(join(dir, "test.db"), "t".repeat(32));
     const account = db.createAccount({ email: "mail@qq.com", password: "authorization-code" });
     let releaseConnect!: () => void;

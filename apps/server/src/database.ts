@@ -19,7 +19,7 @@ import type {
   SmtpConfig,
   SyncFolderConfig,
   SyncMode
-} from "@imap2api/shared";
+} from "@email2api/shared";
 import { CryptoService } from "./crypto.js";
 import { resolveImapConfig, resolveSmtpConfig, type ResolvedImapConfig } from "./providers.js";
 import { InputError } from "./errors.js";
@@ -122,6 +122,7 @@ interface SettingsRow {
   pageSize: number;
   maxConcurrentDownloads: number;
   maxAttachmentSizeMb: number;
+  autoLoadRemoteImages: number;
   remoteImageAllowlistEnc: Buffer | null;
   defaultSenderNameEnc: Buffer | null;
 }
@@ -138,6 +139,7 @@ CREATE TABLE IF NOT EXISTS settings (
   page_size INTEGER NOT NULL DEFAULT 100 CHECK (page_size BETWEEN 10 AND 100),
   max_concurrent_downloads INTEGER NOT NULL DEFAULT 3 CHECK (max_concurrent_downloads BETWEEN 1 AND 10),
   max_attachment_size_mb INTEGER NOT NULL DEFAULT 100 CHECK (max_attachment_size_mb BETWEEN 1 AND 1024),
+  auto_load_remote_images INTEGER NOT NULL DEFAULT 0 CHECK (auto_load_remote_images IN (0, 1)),
   remote_image_allowlist_enc BLOB,
   default_sender_name_enc BLOB
 );
@@ -207,20 +209,21 @@ export class AppDatabase {
     const checkRow = this.raw.prepare("SELECT value FROM meta WHERE key = 'key_check'").get() as { value: Buffer } | undefined;
     if (checkRow) {
       try {
-        if (this.crypto.decrypt<string>(asBuffer(checkRow.value)) !== "imap2api-key-check-v1") throw new Error("mismatch");
+        if (this.crypto.decrypt<string>(asBuffer(checkRow.value)) !== "email2api-key-check-v1") throw new Error("mismatch");
       } catch {
         this.raw.close();
-        throw new Error("IMAP2API_TOKEN cannot decrypt the existing database");
+        throw new Error("EMAIL2API_TOKEN cannot decrypt the existing database");
       }
     } else {
-      this.raw.prepare("INSERT INTO meta(key, value) VALUES ('key_check', ?)").run(this.crypto.encrypt("imap2api-key-check-v1"));
+      this.raw.prepare("INSERT INTO meta(key, value) VALUES ('key_check', ?)").run(this.crypto.encrypt("email2api-key-check-v1"));
     }
     this.raw.exec(SCHEMA);
     this.migrate();
     this.raw.prepare(`INSERT OR IGNORE INTO settings(
       id, max_messages_per_account, poll_interval_seconds, page_size,
-      max_concurrent_downloads, max_attachment_size_mb, remote_image_allowlist_enc, default_sender_name_enc
-    ) VALUES (1, 100, ?, 100, 3, 100, NULL, NULL)`)
+      max_concurrent_downloads, max_attachment_size_mb, auto_load_remote_images,
+      remote_image_allowlist_enc, default_sender_name_enc
+    ) VALUES (1, 100, ?, 100, 3, 100, 0, NULL, NULL)`)
       .run(initialPollIntervalSeconds);
   }
 
@@ -232,6 +235,7 @@ export class AppDatabase {
     const row = this.raw.prepare(`SELECT max_messages_per_account AS maxMessagesPerAccount,
       poll_interval_seconds AS pollIntervalSeconds, page_size AS pageSize,
       max_concurrent_downloads AS maxConcurrentDownloads, max_attachment_size_mb AS maxAttachmentSizeMb,
+      auto_load_remote_images AS autoLoadRemoteImages,
       remote_image_allowlist_enc AS remoteImageAllowlistEnc,
       default_sender_name_enc AS defaultSenderNameEnc FROM settings WHERE id = 1`).get() as SettingsRow;
     return {
@@ -240,6 +244,7 @@ export class AppDatabase {
       pageSize: row.pageSize,
       maxConcurrentDownloads: row.maxConcurrentDownloads,
       maxAttachmentSizeMb: row.maxAttachmentSizeMb,
+      autoLoadRemoteImages: Boolean(row.autoLoadRemoteImages),
       remoteImageAllowlist: row.remoteImageAllowlistEnc
         ? this.crypto.decrypt<string[]>(asBuffer(row.remoteImageAllowlistEnc))
         : [],
@@ -260,10 +265,10 @@ export class AppDatabase {
           : current.remoteImageAllowlist
       };
       this.raw.prepare(`UPDATE settings SET max_messages_per_account = ?, poll_interval_seconds = ?, page_size = ?,
-        max_concurrent_downloads = ?, max_attachment_size_mb = ?, remote_image_allowlist_enc = ?,
+        max_concurrent_downloads = ?, max_attachment_size_mb = ?, auto_load_remote_images = ?, remote_image_allowlist_enc = ?,
         default_sender_name_enc = ? WHERE id = 1`)
         .run(next.maxMessagesPerAccount, next.pollIntervalSeconds, next.pageSize, next.maxConcurrentDownloads,
-          next.maxAttachmentSizeMb, this.crypto.encrypt(next.remoteImageAllowlist),
+          next.maxAttachmentSizeMb, next.autoLoadRemoteImages ? 1 : 0, this.crypto.encrypt(next.remoteImageAllowlist),
           next.defaultSenderName ? this.crypto.encrypt(next.defaultSenderName.trim()) : null);
       const deleted: Array<{ accountId: string; folder: "inbox" | "junk"; ids: string[] }> = [];
       if (next.maxMessagesPerAccount !== current.maxMessagesPerAccount) {
@@ -723,6 +728,9 @@ export class AppDatabase {
     if (!settingsColumns.has("max_attachment_size_mb")) {
       this.raw.exec("ALTER TABLE settings ADD COLUMN max_attachment_size_mb INTEGER NOT NULL DEFAULT 100 CHECK (max_attachment_size_mb BETWEEN 1 AND 1024)");
     }
+    if (!settingsColumns.has("auto_load_remote_images")) {
+      this.raw.exec("ALTER TABLE settings ADD COLUMN auto_load_remote_images INTEGER NOT NULL DEFAULT 0 CHECK (auto_load_remote_images IN (0, 1))");
+    }
     if (!settingsColumns.has("remote_image_allowlist_enc")) {
       this.raw.exec("ALTER TABLE settings ADD COLUMN remote_image_allowlist_enc BLOB");
     }
@@ -741,7 +749,7 @@ export class AppDatabase {
     }
     const messageColumns = new Set((this.raw.pragma("table_info(messages)") as Array<{ name: string }>).map((column) => column.name));
     if (!messageColumns.has("mailbox_key")) this.migrateMailboxSchema();
-    this.raw.pragma("user_version = 8");
+    this.raw.pragma("user_version = 9");
   }
 
   private migrateMailboxSchema(): void {

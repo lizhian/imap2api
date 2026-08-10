@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { ServerEvent } from "@imap2api/shared";
+import type { ServerEvent } from "@email2api/shared";
 
 export interface PublishedEvent {
   id: string;

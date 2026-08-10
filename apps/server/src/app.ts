@@ -308,6 +308,7 @@ export async function buildApp(config: AppConfig, dependencies: AppDependencies 
         pageSize: z.number().int().min(10).max(100).optional(),
         maxConcurrentDownloads: z.number().int().min(1).max(10).optional(),
         maxAttachmentSizeMb: z.number().int().min(1).max(1024).optional(),
+        autoLoadRemoteImages: z.boolean().optional(),
         remoteImageAllowlist: remoteImageAllowlistSchema,
         defaultSenderName: senderNameSchema.optional()
       }).refine((value) => Object.keys(value).length > 0, "至少提供一个设置字段").parse(request.body);
@@ -380,7 +381,7 @@ export async function buildApp(config: AppConfig, dependencies: AppDependencies 
 
 async function readSendUpload(request: FastifyRequest, maximumBytes: number): Promise<{ message: string; attachments: OutgoingAttachment[]; tempDir: string }> {
   if (!request.isMultipart()) throw new InputError("发信请求必须使用 multipart/form-data");
-  const tempDir = await mkdtemp(join(tmpdir(), "imap2api-send-"));
+  const tempDir = await mkdtemp(join(tmpdir(), "email2api-send-"));
   const attachments: OutgoingAttachment[] = [];
   let message = "";
   let totalBytes = 0;

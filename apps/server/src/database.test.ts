@@ -6,7 +6,7 @@ import { AppDatabase } from "./database.js";
 
 const dirs: string[] = [];
 function database(token = "t".repeat(32)) {
-  const dir = mkdtempSync(join(tmpdir(), "imap2api-test-")); dirs.push(dir);
+  const dir = mkdtempSync(join(tmpdir(), "email2api-test-")); dirs.push(dir);
   const path = join(dir, "test.db");
   return { db: new AppDatabase(path, token), path };
 }
@@ -215,12 +215,12 @@ describe("AppDatabase", () => {
     db.raw.prepare("UPDATE accounts SET config_enc = ? WHERE id = ?")
       .run(db.crypto.encrypt({ email: stored.email, imap: stored.imap }), account.id);
     expect(db.listAccounts()[0]!.aliases).toEqual([]);
-    db.raw.exec("ALTER TABLE settings DROP COLUMN poll_interval_seconds; ALTER TABLE settings DROP COLUMN page_size; ALTER TABLE settings DROP COLUMN max_concurrent_downloads; ALTER TABLE settings DROP COLUMN max_attachment_size_mb; ALTER TABLE settings DROP COLUMN remote_image_allowlist_enc; ALTER TABLE settings DROP COLUMN default_sender_name_enc; ALTER TABLE accounts DROP COLUMN sync_mode; ALTER TABLE accounts DROP COLUMN sort_order; PRAGMA user_version = 1;");
+    db.raw.exec("ALTER TABLE settings DROP COLUMN poll_interval_seconds; ALTER TABLE settings DROP COLUMN page_size; ALTER TABLE settings DROP COLUMN max_concurrent_downloads; ALTER TABLE settings DROP COLUMN max_attachment_size_mb; ALTER TABLE settings DROP COLUMN auto_load_remote_images; ALTER TABLE settings DROP COLUMN remote_image_allowlist_enc; ALTER TABLE settings DROP COLUMN default_sender_name_enc; ALTER TABLE accounts DROP COLUMN sync_mode; ALTER TABLE accounts DROP COLUMN sort_order; PRAGMA user_version = 1;");
     db.close();
 
     const migrated = new AppDatabase(path, "t".repeat(32));
-    expect(migrated.raw.pragma("user_version", { simple: true })).toBe(8);
-    expect(migrated.getSettings()).toEqual({ maxMessagesPerAccount: 100, pollIntervalSeconds: 10, pageSize: 100, maxConcurrentDownloads: 3, maxAttachmentSizeMb: 100, remoteImageAllowlist: [], defaultSenderName: "" });
+    expect(migrated.raw.pragma("user_version", { simple: true })).toBe(9);
+    expect(migrated.getSettings()).toEqual({ maxMessagesPerAccount: 100, pollIntervalSeconds: 10, pageSize: 100, maxConcurrentDownloads: 3, maxAttachmentSizeMb: 100, autoLoadRemoteImages: false, remoteImageAllowlist: [], defaultSenderName: "" });
     expect(migrated.listAccounts()[0]).toMatchObject({
       email: "migration@qq.com", syncMode: null, smtp: { host: "smtp.qq.com", port: 465, secure: true }, defaultSenderName: null
     });
@@ -229,16 +229,16 @@ describe("AppDatabase", () => {
 
   it("updates polling, retention, pagination and encrypted image settings independently", () => {
     const { db, path } = database();
-    expect(db.updateSettings({ pollIntervalSeconds: 25 }).settings).toEqual({ maxMessagesPerAccount: 100, pollIntervalSeconds: 25, pageSize: 100, maxConcurrentDownloads: 3, maxAttachmentSizeMb: 100, remoteImageAllowlist: [], defaultSenderName: "" });
-    expect(db.updateSettings({ maxMessagesPerAccount: 80 }).settings).toEqual({ maxMessagesPerAccount: 80, pollIntervalSeconds: 25, pageSize: 100, maxConcurrentDownloads: 3, maxAttachmentSizeMb: 100, remoteImageAllowlist: [], defaultSenderName: "" });
-    expect(db.updateSettings({ pageSize: 60, maxConcurrentDownloads: 4, maxAttachmentSizeMb: 200 }).settings).toEqual({ maxMessagesPerAccount: 80, pollIntervalSeconds: 25, pageSize: 60, maxConcurrentDownloads: 4, maxAttachmentSizeMb: 200, remoteImageAllowlist: [], defaultSenderName: "" });
-    expect(db.updateSettings({ remoteImageAllowlist: [" Trusted@Example.com ", "trusted@example.com"], defaultSenderName: " Operations " }).settings)
-      .toEqual({ maxMessagesPerAccount: 80, pollIntervalSeconds: 25, pageSize: 60, maxConcurrentDownloads: 4, maxAttachmentSizeMb: 200, remoteImageAllowlist: ["trusted@example.com"], defaultSenderName: "Operations" });
+    expect(db.updateSettings({ pollIntervalSeconds: 25 }).settings).toEqual({ maxMessagesPerAccount: 100, pollIntervalSeconds: 25, pageSize: 100, maxConcurrentDownloads: 3, maxAttachmentSizeMb: 100, autoLoadRemoteImages: false, remoteImageAllowlist: [], defaultSenderName: "" });
+    expect(db.updateSettings({ maxMessagesPerAccount: 80 }).settings).toEqual({ maxMessagesPerAccount: 80, pollIntervalSeconds: 25, pageSize: 100, maxConcurrentDownloads: 3, maxAttachmentSizeMb: 100, autoLoadRemoteImages: false, remoteImageAllowlist: [], defaultSenderName: "" });
+    expect(db.updateSettings({ pageSize: 60, maxConcurrentDownloads: 4, maxAttachmentSizeMb: 200 }).settings).toEqual({ maxMessagesPerAccount: 80, pollIntervalSeconds: 25, pageSize: 60, maxConcurrentDownloads: 4, maxAttachmentSizeMb: 200, autoLoadRemoteImages: false, remoteImageAllowlist: [], defaultSenderName: "" });
+    expect(db.updateSettings({ autoLoadRemoteImages: true, remoteImageAllowlist: [" Trusted@Example.com ", "trusted@example.com"], defaultSenderName: " Operations " }).settings)
+      .toEqual({ maxMessagesPerAccount: 80, pollIntervalSeconds: 25, pageSize: 60, maxConcurrentDownloads: 4, maxAttachmentSizeMb: 200, autoLoadRemoteImages: true, remoteImageAllowlist: ["trusted@example.com"], defaultSenderName: "Operations" });
     expect(() => db.updateSettings({ pollIntervalSeconds: 4 })).toThrow();
     expect(() => db.updateSettings({ pageSize: 101 })).toThrow();
     expect(() => db.updateSettings({ maxConcurrentDownloads: 11 })).toThrow();
     expect(() => db.updateSettings({ maxAttachmentSizeMb: 1025 })).toThrow();
-    expect(db.getSettings()).toEqual({ maxMessagesPerAccount: 80, pollIntervalSeconds: 25, pageSize: 60, maxConcurrentDownloads: 4, maxAttachmentSizeMb: 200, remoteImageAllowlist: ["trusted@example.com"], defaultSenderName: "Operations" });
+    expect(db.getSettings()).toEqual({ maxMessagesPerAccount: 80, pollIntervalSeconds: 25, pageSize: 60, maxConcurrentDownloads: 4, maxAttachmentSizeMb: 200, autoLoadRemoteImages: true, remoteImageAllowlist: ["trusted@example.com"], defaultSenderName: "Operations" });
     db.close();
     expect(readFileSync(path).toString("utf8")).not.toContain("trusted@example.com");
     expect(readFileSync(path).toString("utf8")).not.toContain("Operations");

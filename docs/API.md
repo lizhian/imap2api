@@ -1,24 +1,24 @@
-# imap2api HTTP API 接口说明
+# email2api HTTP API 接口说明
 
-本文档面向需要把 imap2api 邮箱能力集成到其他项目的开发者，描述当前 `v1` 接口的认证方式、入参、出参、错误和 SSE 事件格式。
+本文档面向需要把 email2api 邮箱能力集成到其他项目的开发者，描述当前 `v1` 接口的认证方式、入参、出参、错误和 SSE 事件格式。
 
 ## 1. 接入信息
 
 - API 基础地址：`http(s)://<host>:<port>/api/v1`
 - 默认本地地址：`http://localhost:3000/api/v1`
-- 数据格式：除 SSE、`204 No Content` 和发信接口的 multipart 请求外，均为 JSON
+- 数据格式：普通接口使用 JSON；发信请求使用 multipart；附件下载返回二进制流；SSE 返回事件流；`204 No Content` 无响应体
 - 字符编码：UTF-8
 - 时间格式：带时区的 ISO 8601 字符串，例如 `2026-08-07T10:30:00.000Z`
-- 资源 ID：UUID 字符串
+- 账号 ID 和邮件 ID：UUID 字符串；附件 ID 和分页游标是不透明字符串，调用方不得自行解析
 
 生产环境必须通过 HTTPS 调用，避免 Bearer Token 和邮件内容经明文网络传输。
 
 ### 1.1 认证
 
-除 `GET /healthz` 外，所有接口都必须携带服务端环境变量 `IMAP2API_TOKEN` 对应的 Bearer Token：
+除 `GET /healthz` 外，所有接口都必须携带服务端环境变量 `EMAIL2API_TOKEN` 对应的 Bearer Token：
 
 ```http
-Authorization: Bearer <IMAP2API_TOKEN>
+Authorization: Bearer <EMAIL2API_TOKEN>
 ```
 
 JSON 请求还应携带：
@@ -44,12 +44,12 @@ Content-Type: application/json
 ### 1.2 快速验证
 
 ```bash
-export IMAP2API_BASE_URL='http://localhost:3000/api/v1'
-export IMAP2API_TOKEN='replace-with-your-token'
+export EMAIL2API_BASE_URL='http://localhost:3000/api/v1'
+export EMAIL2API_TOKEN='replace-with-your-token'
 
 curl -X POST \
-  -H "Authorization: Bearer $IMAP2API_TOKEN" \
-  "$IMAP2API_BASE_URL/auth/verify"
+  -H "Authorization: Bearer $EMAIL2API_TOKEN" \
+  "$EMAIL2API_BASE_URL/auth/verify"
 ```
 
 成功响应：
@@ -68,9 +68,10 @@ curl -X POST \
 | --- | --- | --- |
 | `ProviderId` | `auto`, `qq`, `gmail`, `icloud`, `outlook`, `qq-enterprise`, `163`, `custom` | 邮箱服务商；`auto` 仅用于入参自动识别 |
 | `ConnectionStatus` | `pending`, `connecting`, `connected`, `warning`, `error` | 账号连接状态 |
-| `SyncMode` | `idle`, `polling` | 实时 IDLE 或定时轮询；尚未建立会话时为 `null` |
+| `SyncMode` | `idle`, `polling` | 系统邮箱主会话使用实时 IDLE 或定时轮询；尚未建立会话时为 `null` |
 | `SyncFolderMode` | `idle`, `polling` | 自定义同步文件夹使用独立 IDLE 连接或账号级共享轮询连接 |
 | `MessageView` | `all`, `unread`, `junk` | 邮件列表视图 |
+| `MessageSecondaryFilter` | `verification_code`, `attachment`, `forwarded` | 邮件列表的可组合次级筛选条件 |
 | `FolderKind` | `inbox`, `junk` | 收件箱或垃圾箱 |
 | `MessageLabel` | `forwarded`, `verification_code`, `unsubscribe` | 转发邮件、验证码邮件、退订邮件 |
 
@@ -79,9 +80,9 @@ curl -X POST \
 | 状态 | 含义 |
 | --- | --- |
 | `pending` | 账号刚创建或更新，等待连接 |
-| `connecting` | 正在连接或初始化邮箱文件夹 |
-| `connected` | 收件箱和垃圾箱均正常工作 |
-| `warning` | 收件箱可用，但垃圾箱缺失或连接失败 |
+| `connecting` | 正在连接或初始化任一已配置邮箱文件夹 |
+| `connected` | 收件箱及其他已配置同步会话均正常工作 |
+| `warning` | 收件箱可用，但垃圾箱或自定义文件夹缺失、失败，或自定义 IDLE 已降级为轮询 |
 | `error` | 收件箱连接或同步失败 |
 
 ### 2.2 `Address`
@@ -121,7 +122,7 @@ curl -X POST \
 | `defaultSenderName` | `string \| null` | 账号级默认发件人名称 |
 | `hasCredential` | `true` | 表示服务端已保存凭据，不代表返回了凭据 |
 | `status` | `ConnectionStatus` | 当前连接状态 |
-| `syncMode` | `SyncMode \| null` | 当前同步模式 |
+| `syncMode` | `SyncMode \| null` | 收件箱优先、垃圾箱回退的系统邮箱同步模式；自定义文件夹模式从文件夹接口读取 |
 | `messageCount` | `integer` | 当前账号的本地缓存邮件总数 |
 | `unreadCount` | `integer` | 当前账号的本地未读邮件数 |
 | `syncFolderCount` | `integer` | 已选择的自定义同步文件夹数，不含系统收件箱和垃圾箱 |
@@ -145,6 +146,7 @@ curl -X POST \
 | `read` | `boolean` | 是否已读 |
 | `hasAttachments` | `boolean` | 是否包含附件 |
 | `labels` | `MessageLabel[]` | 自动识别标签 |
+| `forwardedVia` | `string \| null` | 检测到的转发中转邮箱地址；未识别时为 `null` |
 
 ### 2.5 `MessageDetail`
 
@@ -177,6 +179,7 @@ curl -X POST \
 | `POST` | `/auth/verify` | 是 | `200` | 验证 Token |
 | `GET` | `/accounts` | 是 | `200` | 查询账号列表 |
 | `POST` | `/accounts` | 是 | `201` | 新增账号 |
+| `PUT` | `/accounts/order` | 是 | `200` | 更新全部账号的显示顺序 |
 | `PATCH` | `/accounts/:id` | 是 | `200` | 更新账号 |
 | `DELETE` | `/accounts/:id` | 是 | `204` | 删除账号及其本地缓存 |
 | `POST` | `/accounts/:id/test` | 是 | `200` | 测试 IMAP 连接 |
@@ -242,7 +245,7 @@ GET /api/v1/accounts
 
 入参：无。
 
-`200 OK`：返回 `Account[]`，按创建时间升序排列。
+`200 OK`：返回 `Account[]`，按已保存的账号顺序排列；尚未显式排序时保持创建顺序。
 
 ```json
 [
@@ -257,9 +260,18 @@ GET /api/v1/accounts
       "port": 993,
       "secure": true
     },
+    "smtp": {
+      "host": "smtp.gmail.com",
+      "port": 465,
+      "secure": true
+    },
+    "defaultSenderName": "Operations",
     "hasCredential": true,
     "status": "connected",
     "syncMode": "idle",
+    "messageCount": 128,
+    "unreadCount": 7,
+    "syncFolderCount": 2,
     "lastSyncedAt": "2026-08-07T10:30:00.000Z",
     "lastError": null,
     "createdAt": "2026-08-07T10:00:00.000Z",
@@ -268,7 +280,33 @@ GET /api/v1/accounts
 ]
 ```
 
-### 5.2 新增账号
+### 5.2 更新账号顺序
+
+```http
+PUT /api/v1/accounts/order
+Content-Type: application/json
+```
+
+请求体必须提供当前全部账号 ID，数组顺序就是后续 `GET /accounts` 的返回顺序：
+
+| 字段 | 类型 | 必填 | 约束与说明 |
+| --- | --- | --- | --- |
+| `accountIds` | `string(UUID)[]` | 是 | 最多 1000 项；不得重复，且必须与当前账号集合完全一致 |
+
+```json
+{
+  "accountIds": [
+    "f00ee764-a592-484a-81f0-309e41a05813",
+    "5f3deca8-7aa3-489a-bcf5-03ca02fb7474"
+  ]
+}
+```
+
+`200 OK`：返回按新顺序排列的完整 `Account[]`。
+
+可能的业务错误：`400 VALIDATION_ERROR`。如果排序期间账号集合已变化，调用方应重新查询账号列表后再提交完整顺序。
+
+### 5.3 新增账号
 
 ```http
 POST /api/v1/accounts
@@ -295,6 +333,8 @@ POST /api/v1/accounts
 已内置 `qq`、`gmail`、`icloud`、`outlook`、`qq-enterprise`、`163` 的 IMAP 预设。Gmail、iCloud、QQ、163 等邮箱通常需要应用专用密码或授权码；当前接口不支持 OAuth 登录。
 
 对应 SMTP 预设为 `smtp.qq.com:465`、`smtp.gmail.com:465`、`smtp.mail.me.com:587`、`smtp-mail.outlook.com:587`、`smtp.exmail.qq.com:465` 和 `smtp.163.com:465`。587 端口配置强制 STARTTLS，不允许明文降级。
+
+更新账号时若改变 `imap.provider` 且未同时提交 `smtp`，服务端会按新服务商重新解析 SMTP：内置服务商使用对应预设，自定义服务商变为 `null`。
 
 自动识别示例：
 
@@ -328,7 +368,7 @@ POST /api/v1/accounts
 - `400 VALIDATION_ERROR`：字段格式错误、别名冲突或无法解析 IMAP 主机。
 - `409 ACCOUNT_EXISTS`：主邮箱账号已存在。
 
-### 5.3 更新账号
+### 5.4 更新账号
 
 ```http
 PATCH /api/v1/accounts/:id
@@ -349,7 +389,7 @@ PATCH /api/v1/accounts/:id
 }
 ```
 
-`200 OK`：返回更新后的 `Account`。更新会重置连接状态并重启该账号的同步会话；修改邮箱或别名还会重新分类已缓存邮件。
+`200 OK`：返回更新后的 `Account`。修改 `email`、`password` 或 `imap` 会重置连接状态并重启同步会话；只修改 `smtp`、`defaultSenderName` 或 `aliases` 不会重启 IMAP。修改邮箱或别名会重新分类已缓存邮件。
 
 可能的业务错误：
 
@@ -357,7 +397,7 @@ PATCH /api/v1/accounts/:id
 - `404 ACCOUNT_NOT_FOUND`
 - `409 ACCOUNT_EXISTS`
 
-### 5.4 删除账号
+### 5.5 删除账号
 
 ```http
 DELETE /api/v1/accounts/:id
@@ -369,7 +409,7 @@ DELETE /api/v1/accounts/:id
 
 可能的业务错误：`404 ACCOUNT_NOT_FOUND`。
 
-### 5.5 测试 IMAP 连接
+### 5.6 测试 IMAP 连接
 
 ```http
 POST /api/v1/accounts/:id/test
@@ -390,17 +430,25 @@ POST /api/v1/accounts/:id/test
 - `404 ACCOUNT_NOT_FOUND`
 - `502 IMAP_CONNECTION_FAILED`
 
-### 5.5.1 测试 SMTP 连接
+### 5.7 测试 SMTP 连接
 
 ```http
 POST /api/v1/accounts/:id/smtp/test
 ```
 
-接口使用账号主邮箱和现有授权码调用 Nodemailer `verify()`，不会发送实际邮件。成功返回 `{ "ok": true }`。
+入参：路径参数 `id` 为账号 ID，无请求体。接口使用账号主邮箱和现有授权码验证 SMTP，不会发送实际邮件。
+
+`200 OK`：
+
+```json
+{
+  "ok": true
+}
+```
 
 可能的业务错误：`400 SMTP_NOT_CONFIGURED`、`404 ACCOUNT_NOT_FOUND`、`502 SMTP_CONNECTION_FAILED`。
 
-### 5.6 触发同步
+### 5.8 触发同步
 
 ```http
 POST /api/v1/accounts/:id/sync
@@ -423,7 +471,9 @@ POST /api/v1/accounts/:id/sync
 
 接口仅表示触发请求已接受，不代表同步已经完成。调用方应通过 SSE 的 `account.changed`、`messages.changed` 事件，或重新查询账号状态和邮件列表来获得最终结果。
 
-### 5.7 查询可同步文件夹
+可能的业务错误：`404 ACCOUNT_NOT_FOUND`。
+
+### 5.9 查询可同步文件夹
 
 ```http
 GET /api/v1/accounts/:id/mailboxes
@@ -448,9 +498,24 @@ GET /api/v1/accounts/:id/mailboxes
 }
 ```
 
+`items` 中每一项的字段：
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `path` | `string` | IMAP 文件夹完整路径，后续配置时原样回传 |
+| `name` | `string` | 文件夹名称 |
+| `depth` | `integer` | 按服务端分隔符计算的层级深度，顶层为 `0` |
+| `kind` | `inbox \| junk \| custom` | 系统收件箱、系统垃圾箱或可选自定义文件夹 |
+| `selectable` | `boolean` | 是否允许出现在 `sync-folders` 入参中 |
+| `available` | `boolean` | 当前远端是否仍存在该文件夹 |
+| `selectedMode` | `SyncFolderMode \| null` | 自定义文件夹当前同步模式；未选择或系统文件夹为 `null` |
+| `cachedMessageCount` | `integer` | 该真实 IMAP 文件夹当前的本地缓存邮件数 |
+
 文件夹路径来自 IMAP 服务器，客户端应按普通文本处理。服务端只在加密配置和加密邮件传输信息中保存路径。
 
-### 5.8 更新同步文件夹
+可能的业务错误：`404 ACCOUNT_NOT_FOUND`、`502 IMAP_MAILBOX_LIST_FAILED`。
+
+### 5.10 更新同步文件夹
 
 ```http
 PUT /api/v1/accounts/:id/sync-folders
@@ -464,6 +529,14 @@ Content-Type: application/json
 }
 ```
 
+请求体：
+
+| 字段 | 类型 | 必填 | 约束与说明 |
+| --- | --- | --- | --- |
+| `folders` | `SyncFolderConfig[]` | 是 | 自定义同步文件夹的完整目标配置，最多 20 项；空数组表示取消全部自定义文件夹 |
+| `folders[].path` | `string` | 是 | 去除首尾空格后长度 1–1000；不得重复 |
+| `folders[].mode` | `SyncFolderMode` | 是 | `idle` 或 `polling` |
+
 - 每个账号最多选择 20 个自定义文件夹，其中最多 5 个使用 `idle`。
 - 新增的路径必须存在且可选择；远端暂时缺失的已配置路径可以继续保留。
 - `idle` 文件夹各使用一个长期连接；`polling` 文件夹在账号内共享一个连接并顺序同步。
@@ -473,8 +546,6 @@ Content-Type: application/json
 `200 OK`：返回更新后的 `Account`，同步会话随后按新配置重启。
 
 可能的错误：`400 VALIDATION_ERROR`、`404 ACCOUNT_NOT_FOUND`、`502 IMAP_SYNC_FOLDER_UPDATE_FAILED`。
-
-可能的业务错误：`404 ACCOUNT_NOT_FOUND`。
 
 ## 6. 邮件接口
 
@@ -490,6 +561,7 @@ Query 参数：
 | --- | --- | --- | --- | --- |
 | `accountId` | `string(UUID)` | 否 | 全部账号 | 只返回指定账号的邮件 |
 | `view` | `MessageView` | 否 | `all` | `all` 包含收件箱和垃圾箱；`unread` 包含所有文件夹中的未读邮件；`junk` 只含垃圾箱邮件 |
+| `filter` | `MessageSecondaryFilter` | 否 | 无 | 可重复传入，最多 3 项；多个条件按 AND 关系组合 |
 | `after` | `string(datetime)` | 否 | 无 | `displayTime >= after` |
 | `before` | `string(datetime)` | 否 | 无 | `displayTime < before` |
 | `cursor` | `string` | 否 | 无 | 上一页返回的 `nextCursor`，最长 1000 字符；调用方不得解析或修改 |
@@ -497,10 +569,16 @@ Query 参数：
 
 `after` 和 `before` 必须为带时区的 ISO 8601 时间。结果按 `displayTime` 降序排列；时间相同时按邮件 ID 降序排列。
 
+`filter` 必须使用重复 Query 参数传递，不使用逗号拼接：
+
+- `verification_code`：包含验证码标签。
+- `attachment`：包含至少一个附件。
+- `forwarded`：包含转发标签。
+
 请求示例：
 
 ```http
-GET /api/v1/messages?accountId=5f3deca8-7aa3-489a-bcf5-03ca02fb7474&view=unread&after=2026-08-01T00%3A00%3A00.000Z&limit=20
+GET /api/v1/messages?accountId=5f3deca8-7aa3-489a-bcf5-03ca02fb7474&view=unread&filter=verification_code&filter=attachment&after=2026-08-01T00%3A00%3A00.000Z&limit=20
 ```
 
 `200 OK`：
@@ -523,8 +601,9 @@ GET /api/v1/messages?accountId=5f3deca8-7aa3-489a-bcf5-03ca02fb7474&view=unread&
       "displayTime": "2026-08-07T10:25:00.000Z",
       "folder": "inbox",
       "read": false,
-      "hasAttachments": false,
-      "labels": ["verification_code"]
+      "hasAttachments": true,
+      "labels": ["verification_code"],
+      "forwardedVia": null
     }
   ],
   "nextCursor": "WyIyMDI2LTA4LTA3VDEwOjI1OjAwLjAwMFoiLCJmMzM4MDg4Ny00MjM4LTQzOWItOTYzNi1iMTY2ZWM1MWUyNzAiXQ",
@@ -536,9 +615,9 @@ GET /api/v1/messages?accountId=5f3deca8-7aa3-489a-bcf5-03ca02fb7474&view=unread&
 | --- | --- | --- |
 | `items` | `MessageSummary[]` | 当前页邮件摘要 |
 | `nextCursor` | `string \| null` | 下一页游标；为 `null` 时没有下一页 |
-| `total` | `integer` | 当前账号、视图、筛选和时间范围下的邮件总数 |
+| `total` | `integer` | 当前账号、视图、筛选和时间范围下的邮件总数，不受 `cursor` 影响 |
 
-分页时应保留首个请求的 `accountId`、`view`、`after`、`before` 和 `limit`，仅追加或替换 `cursor`。游标依赖当前排序边界，缓存变化后可能出现正常的跨页漂移；对一致性敏感的调用方应在收到 SSE 变更事件后从第一页重新查询。
+分页时应保留首个请求的 `accountId`、`view`、全部 `filter`、`after`、`before` 和 `limit`，仅追加或替换 `cursor`。游标依赖当前排序边界，缓存变化后可能出现正常的跨页漂移；对一致性敏感的调用方应在收到 SSE 变更事件后从第一页重新查询。
 
 可能的业务错误：`400 VALIDATION_ERROR`，包括无效时间、枚举、范围或分页游标。
 
@@ -570,6 +649,7 @@ GET /api/v1/messages/:id
   "read": false,
   "hasAttachments": true,
   "labels": ["verification_code"],
+  "forwardedVia": null,
   "to": [
     {
       "address": "user@gmail.com"
@@ -599,12 +679,28 @@ GET /api/v1/messages/:id
 
 ```http
 GET /api/v1/messages/:id/attachments/:attachmentId
-Authorization: Bearer <IMAP2API_TOKEN>
+Authorization: Bearer <EMAIL2API_TOKEN>
 ```
+
+路径参数：
+
+| 参数 | 类型 | 说明 |
+| --- | --- | --- |
+| `id` | `string(UUID)` | 本地邮件 ID |
+| `attachmentId` | `string` | 邮件详情中非 `null` 的附件 `id`，按不透明字符串原样使用 |
 
 服务端使用邮件缓存中的账号、真实文件夹、UID、UIDVALIDITY 和附件 MIME part，从远端 IMAP 按需读取并返回二进制流。附件内容不会写入 SQLite 或本地文件系统。
 
-成功响应包含 `Content-Type`、`Content-Disposition: attachment`、`Cache-Control: private, no-store` 和 `X-Content-Type-Options: nosniff`。下载不支持 HTTP Range、断点续传或批量 ZIP。
+`200 OK`：响应体为附件二进制流，不是 JSON。响应包含：
+
+| Header | 说明 |
+| --- | --- |
+| `Content-Type` | 安全规范化后的附件 MIME 类型；无效或未知时为 `application/octet-stream` |
+| `Content-Disposition` | `attachment`，同时提供 ASCII 回退文件名和 UTF-8 文件名 |
+| `Cache-Control` | 固定为 `private, no-store` |
+| `X-Content-Type-Options` | 固定为 `nosniff` |
+
+下载不支持 HTTP Range、断点续传或批量 ZIP。附件元数据 `id` 为 `null` 时不可调用下载接口，应等待同步完成元数据回填。
 
 可能的业务错误：
 
@@ -685,7 +781,7 @@ Content-Type: application/json
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
 | `count` | `integer` | 本次成功写入远端并更新本地缓存的邮件数 |
-| `failedFolders` | `FolderKind[]` | 更新失败的文件夹；空数组表示全部成功 |
+| `failedFolders` | `FolderKind[]` | 更新失败的公开文件夹类别；空数组表示全部成功，自定义文件夹失败归入 `inbox` |
 
 调用方不能只把 `2xx` 当作完全成功，必须检查 `failedFolders`。该操作只处理当前保留在本地缓存中的未读邮件。
 
@@ -703,6 +799,28 @@ Content-Type: multipart/form-data; boundary=<generated-boundary>
 
 请求必须包含一个名为 `message` 的文本字段，其值为 JSON；每个附件使用同名 `attachments` 文件字段：
 
+multipart 字段：
+
+| 字段 | 类型 | 必填 | 约束与说明 |
+| --- | --- | --- | --- |
+| `message` | 文本字段 | 是 | 只允许一个，内容为下表所述 JSON |
+| `attachments` | 文件字段 | 否 | 可重复，最多 20 个；文件名和 MIME 类型会被安全规范化 |
+
+`message` JSON：
+
+| 字段 | 类型 | 必填 | 约束与说明 |
+| --- | --- | --- | --- |
+| `accountId` | `string(UUID)` | 是 | 用于 SMTP 登录的账号 ID |
+| `fromAddress` | `string(email)` | 是 | 账号主邮箱或已配置别名；服务端会转为小写 |
+| `senderName` | `string` | 否 | 最长 200 字符，不得包含 CR/LF；省略时使用账号级或系统级默认值 |
+| `to` | `string(email)[]` | 是 | 主收件人数组，可为空；单数组最多 100 项 |
+| `cc` | `string(email)[]` | 否 | 抄送人数组，最多 100 项 |
+| `bcc` | `string(email)[]` | 否 | 密送人数组，最多 100 项 |
+| `subject` | `string` | 是 | 最长 998 字符，不得包含 CR/LF |
+| `html` | `string` | 是 | 最长 1 MiB；没有附件时，净化并转成纯文本后不得为空 |
+
+`to`、`cc`、`bcc` 三组收件人合计必须为 1–100 个。
+
 ```json
 {
   "accountId": "5f3deca8-7aa3-489a-bcf5-03ca02fb7474",
@@ -718,9 +836,8 @@ Content-Type: multipart/form-data; boundary=<generated-boundary>
 
 - `fromAddress` 必须是账号主邮箱或已配置别名；SMTP 登录始终使用主邮箱和账号授权码。
 - 发件人名称按请求值、账号默认值、系统默认值的顺序解析。
-- 收件人合计至少 1 个、最多 100 个；主题最长 998 字符，HTML 最长 1 MiB。
 - 最多 20 个附件；单件及总大小均不能超过 `maxAttachmentSizeMb`。附件仅在请求期间临时保存，结束后清理。
-- HTML 仅保留基础段落、粗体、斜体、下划线、列表和安全链接，并同时生成纯文本正文。
+- HTML 仅保留段落、三级标题、粗体、斜体、下划线、删除线、引用、分隔线、列表、安全链接和受控样式的表格，并同时生成纯文本正文。
 
 完整成功返回 `200 OK`，部分收件人被拒绝返回 `207 Multi-Status`：
 
@@ -733,6 +850,12 @@ Content-Type: multipart/form-data; boundary=<generated-boundary>
 ```
 
 调用方必须检查 `rejected`。服务端不保存草稿、发信历史或“已发送”副本。
+
+| 出参字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `messageId` | `string` | SMTP 服务器返回的消息 ID |
+| `accepted` | `string[]` | SMTP 服务器接受的收件地址 |
+| `rejected` | `string[]` | SMTP 服务器拒绝的收件地址；非空时 HTTP 状态码为 `207` |
 
 可能的业务错误：`400 VALIDATION_ERROR`、`400 SMTP_NOT_CONFIGURED`、`404 ACCOUNT_NOT_FOUND`、`413 ATTACHMENT_TOO_LARGE`、`413 ATTACHMENT_TOTAL_TOO_LARGE`、`502 SMTP_RECIPIENTS_REJECTED`、`502 SMTP_SEND_FAILED`。
 
@@ -755,6 +878,7 @@ GET /api/v1/settings
   "pageSize": 100,
   "maxConcurrentDownloads": 3,
   "maxAttachmentSizeMb": 100,
+  "autoLoadRemoteImages": false,
   "remoteImageAllowlist": [],
   "defaultSenderName": ""
 }
@@ -762,11 +886,12 @@ GET /api/v1/settings
 
 | 字段 | 类型 | 范围 | 说明 |
 | --- | --- | --- | --- |
-| `maxMessagesPerAccount` | `integer` | 1–10000 | 每个账号在收件箱和垃圾箱之间合计保留的最大缓存邮件数 |
+| `maxMessagesPerAccount` | `integer` | 1–10000 | 每个账号在所有已同步文件夹中合计保留的最大缓存邮件数 |
 | `pollIntervalSeconds` | `integer` | 5–3600 | 不支持 IDLE 的会话轮询间隔；支持 IDLE 的会话不按此间隔轮询 |
 | `pageSize` | `integer` | 10–100 | 管理端邮件列表每页加载的邮件数量 |
 | `maxConcurrentDownloads` | `integer` | 1–10 | 单进程内所有账号共享的附件并发下载上限 |
 | `maxAttachmentSizeMb` | `integer` | 1–1024 | 单附件下载、发信单附件及单次发信附件总量上限 |
+| `autoLoadRemoteImages` | `boolean` | - | 是否为所有邮件自动加载远程图片；启用后忽略发件人白名单限制 |
 | `remoteImageAllowlist` | `string[]` | 最多 200 项 | 打开邮件时允许自动加载远程图片的完整发件人邮箱地址 |
 | `defaultSenderName` | `string` | 最多 200 字符 | 系统默认发件人名称；空字符串表示不设置 |
 
@@ -785,11 +910,15 @@ PATCH /api/v1/settings
   "pageSize": 60,
   "maxConcurrentDownloads": 4,
   "maxAttachmentSizeMb": 200,
+  "autoLoadRemoteImages": true,
+  "remoteImageAllowlist": ["trusted@example.com", "images@example.com"],
   "defaultSenderName": "Operations"
 }
 ```
 
 `200 OK`：返回修改后的完整设置对象。
+
+`remoteImageAllowlist` 的每一项必须是完整邮箱地址，最多 200 项；服务端会去除首尾空格、转为小写并去重。`defaultSenderName` 最长 200 字符且不能包含 CR/LF，空字符串表示清除系统默认发件人名称。
 
 降低 `maxMessagesPerAccount` 会立即清理超出保留窗口的本地缓存，并通过 SSE 发送对应的 `messages.changed.deletedIds`；不会删除远端邮件。
 
@@ -802,7 +931,7 @@ PATCH /api/v1/settings
 ```http
 GET /api/v1/events
 Accept: text/event-stream
-Authorization: Bearer <IMAP2API_TOKEN>
+Authorization: Bearer <EMAIL2API_TOKEN>
 ```
 
 可选 Query 参数：
@@ -954,6 +1083,8 @@ data: {"accountId":"5f3deca8-7aa3-489a-bcf5-03ca02fb7474","status":"connected","
 | `429` | `DOWNLOAD_QUEUE_FULL` | 附件下载等待队列已满 |
 | `429` | `DOWNLOAD_QUEUE_TIMEOUT` | 附件下载排队超过 30 秒 |
 | `502` | `IMAP_CONNECTION_FAILED` | IMAP 连接测试失败 |
+| `502` | `IMAP_MAILBOX_LIST_FAILED` | 无法从远端 IMAP 读取文件夹列表 |
+| `502` | `IMAP_SYNC_FOLDER_UPDATE_FAILED` | 更新同步文件夹时远端操作失败 |
 | `502` | `IMAP_DOWNLOAD_FAILED` | 远端附件下载失败 |
 | `502` | `IMAP_UPDATE_FAILED` | 远端 IMAP 已读写操作失败 |
 | `400` | `SMTP_NOT_CONFIGURED` | 账号未配置可用的 SMTP 主机 |
@@ -973,7 +1104,7 @@ data: {"accountId":"5f3deca8-7aa3-489a-bcf5-03ca02fb7474","status":"connected","
 ## 10. 集成边界与注意事项
 
 - 本 API 读取的是本地加密缓存，不保证每次查询都即时访问远端 IMAP；同步完成状态以账号状态和 SSE 事件为准。
-- `maxMessagesPerAccount` 是每个账号跨收件箱与垃圾箱的合计缓存上限；较旧邮件可能不存在于 API 中。
+- `maxMessagesPerAccount` 是每个账号跨所有已同步文件夹的合计缓存上限；较旧邮件可能不存在于 API 中。
 - 邮件 ID 是本地缓存资源 ID。邮件从缓存移除后，对应详情接口会返回 `404 MESSAGE_NOT_FOUND`。
 - 已读接口会修改远端邮箱状态；删除账号和调整缓存上限只修改本地数据，不删除远端邮件。
 - 附件只在请求下载时从远端 IMAP 流式读取；本地加密缓存仅保存附件元数据，不保存附件内容。
@@ -982,6 +1113,6 @@ data: {"accountId":"5f3deca8-7aa3-489a-bcf5-03ca02fb7474","status":"connected","
 
 ## 11. TypeScript 类型来源
 
-仓库内可复用的公共类型位于 `packages/shared/src/index.ts`，包名为 `@imap2api/shared`。它提供 `Account`、`AccountInput`、`AccountUpdate`、`MessageSummary`、`MessageDetail`、`MessageListResponse`、`Settings`、`SyncTriggerResult`、`ReadAllResult`、`ServerEvent` 和 `ApiError` 等类型。
+仓库内可复用的公共类型位于 `packages/shared/src/index.ts`，包名为 `@email2api/shared`。它提供 `Account`、`AccountInput`、`AccountUpdate`、`AccountOrderUpdate`、`MailboxListResponse`、`SyncFoldersUpdate`、`MessageSummary`、`MessageDetail`、`MessageListResponse`、`SendMailInput`、`SendMailResult`、`Settings`、`SyncTriggerResult`、`ReadAllResult`、`ServerEvent` 和 `ApiError` 等类型。
 
 这些类型适合仓库内或受控的 TypeScript 集成。跨语言、跨版本集成仍应以本文档描述的 HTTP JSON/SSE 线格式为边界，并在升级服务版本时重新核对契约。

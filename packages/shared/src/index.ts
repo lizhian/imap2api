@@ -141,6 +141,7 @@ export interface Settings {
   pageSize: number;
   maxConcurrentDownloads: number;
   maxAttachmentSizeMb: number;
+  autoLoadRemoteImages: boolean;
   remoteImageAllowlist: string[];
   defaultSenderName: string;
 }

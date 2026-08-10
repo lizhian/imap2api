@@ -56,7 +56,7 @@ describe("mail HTML sanitization", () => {
   });
 
   it("fetches bounded safe CID parts and rejects SVG and oversized parts", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "imap2api-mail-html-"));
+    const dir = mkdtempSync(join(tmpdir(), "email2api-mail-html-"));
     dirs.push(dir);
     const db = new AppDatabase(join(dir, "test.db"), "t".repeat(32));
     const publicAccount = db.createAccount({ email: "mail@qq.com", password: "authorization-code" });
@@ -177,7 +177,7 @@ describe("mail HTML sanitization", () => {
   });
 
   it("backfills a version 2 forwarding result from metadata headers without fetching a body", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "imap2api-mail-forwarding-"));
+    const dir = mkdtempSync(join(tmpdir(), "email2api-mail-forwarding-"));
     dirs.push(dir);
     const db = new AppDatabase(join(dir, "test.db"), "t".repeat(32));
     const publicAccount = db.createAccount({

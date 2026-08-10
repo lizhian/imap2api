@@ -1,4 +1,4 @@
-import type { ImapConfig, ProviderId, ResolvedSmtpConfig, SmtpConfig } from "@imap2api/shared";
+import type { ImapConfig, ProviderId, ResolvedSmtpConfig, SmtpConfig } from "@email2api/shared";
 import { InputError } from "./errors.js";
 
 export interface ResolvedImapConfig {

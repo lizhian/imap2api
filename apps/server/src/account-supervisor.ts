@@ -1,5 +1,5 @@
 import { ImapFlow } from "imapflow";
-import type { ConnectionStatus, FolderKind, SyncMode, SyncTriggerResult } from "@imap2api/shared";
+import type { ConnectionStatus, FolderKind, SyncMode, SyncTriggerResult } from "@email2api/shared";
 import { AppDatabase, type StoredAccount } from "./database.js";
 import { EventBroker } from "./events.js";
 import { AccountNotFoundError } from "./errors.js";

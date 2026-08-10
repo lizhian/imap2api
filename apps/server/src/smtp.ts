@@ -3,7 +3,7 @@ import nodemailer from "nodemailer";
 import type SMTPTransport from "nodemailer/lib/smtp-transport/index.js";
 import { htmlToText } from "html-to-text";
 import sanitizeHtml from "sanitize-html";
-import type { SendMailInput, SendMailResult } from "@imap2api/shared";
+import type { SendMailInput, SendMailResult } from "@email2api/shared";
 import { AppDatabase } from "./database.js";
 import { AccountNotFoundError, HttpError, InputError } from "./errors.js";
 
@@ -30,8 +30,35 @@ export class SmtpCancelledError extends Error {
 }
 
 const OUTGOING_HTML_POLICY: sanitizeHtml.IOptions = {
-  allowedTags: ["p", "br", "strong", "b", "em", "i", "u", "ul", "ol", "li", "a"],
-  allowedAttributes: { a: ["href", "title"] },
+  allowedTags: [
+    "p", "br", "h1", "h2", "h3", "strong", "b", "em", "i", "u", "s", "strike",
+    "blockquote", "hr", "ul", "ol", "li", "a", "table", "thead", "tbody", "tfoot", "tr", "th", "td"
+  ],
+  allowedAttributes: {
+    a: ["href", "title"],
+    table: ["style"],
+    th: ["colspan", "rowspan", "style"],
+    td: ["colspan", "rowspan", "style"]
+  },
+  allowedStyles: {
+    table: {
+      "border-collapse": [/^collapse$/],
+      width: [/^100%$/],
+      "table-layout": [/^fixed$/]
+    },
+    th: {
+      border: [/^1px solid #d1d5db$/i],
+      padding: [/^6px 8px$/],
+      "vertical-align": [/^top$/],
+      "background-color": [/^#f3f4f6$/i],
+      "text-align": [/^left$/]
+    },
+    td: {
+      border: [/^1px solid #d1d5db$/i],
+      padding: [/^6px 8px$/],
+      "vertical-align": [/^top$/]
+    }
+  },
   allowedSchemes: ["http", "https", "mailto"],
   allowProtocolRelative: false,
   disallowedTagsMode: "discard"

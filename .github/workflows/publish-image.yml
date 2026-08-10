@@ -17,7 +17,7 @@ concurrency:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: lizhian/imap2api
+  IMAGE_NAME: lizhian/email2api
 
 jobs:
   publish:
@@ -57,7 +57,7 @@ jobs:
             type=semver,pattern={{major}}
             type=sha,format=short
           labels: |
-            org.opencontainers.image.title=imap2api
+            org.opencontainers.image.title=email2api
             org.opencontainers.image.description=Encrypted IMAP cache with an HTTP API and management interface
 
       - name: Build and push image
@@ -70,5 +70,5 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           annotations: ${{ steps.meta.outputs.annotations }}
-          cache-from: type=gha,scope=imap2api
-          cache-to: type=gha,mode=max,scope=imap2api
+          cache-from: type=gha,scope=email2api
+          cache-to: type=gha,mode=max,scope=email2api

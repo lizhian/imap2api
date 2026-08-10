@@ -193,6 +193,7 @@
 .aliasList > span { min-width: 0; max-width: 100%; display: inline-flex; align-items: center; gap: 3px; padding: 3px 4px 3px 8px; border: 1px solid var(--border-soft); border-radius: 6px; background: var(--surface-raised); font-size: 12px; overflow-wrap: anywhere; }
 .aliasList button { width: 28px; height: 28px; display: inline-grid; place-items: center; flex: none; padding: 0; border: 0; border-radius: 5px; background: transparent; color: var(--text-secondary); }
 .aliasList button:hover { background: color-mix(in oklab, var(--color-base-content) 6%, transparent); color: var(--text); }
+.aliasList button:disabled:hover { background: transparent; color: var(--text-secondary); }
 .disclosure { min-height: 36px; display: flex; align-items: center; gap: 8px; padding: 0; background: transparent; color: var(--text-secondary); font-size: 13px; text-align: left; }
 .disclosure span { margin-left: auto; color: var(--text-tertiary); }
 .advancedFields { display: grid; gap: 10px; padding: 12px 14px; border: 1px solid var(--border-soft); border-radius: 7px; background: var(--surface-raised); }
@@ -331,11 +332,17 @@
 .settingsSection { max-width: 760px; }
 .settingsForm { min-height: 104px; display: grid; gap: 12px; padding: 14px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); }
 .settingsField { display: grid; grid-template-columns: 176px minmax(0, 1fr); align-items: start; gap: 4px 16px; }
-.settingsField > label { grid-row: 1 / span 2; align-self: start; padding-top: 10px; }
-.settingsField > .numberControl, .settingsField > .settingsValue, .settingsField > p { grid-column: 2; }
+.settingsField > label { grid-row: 1; align-self: start; padding-top: 10px; }
+.settingsField > .numberControl, .settingsField > .settingsValue { grid-column: 2; }
 .settingsValue { min-width: 0; display: grid; gap: 6px; }
+.settingsToggle { appearance: none; position: relative; width: 36px; height: 20px; margin: 0; border: 1px solid var(--border); border-radius: 999px; background: var(--color-base-300); cursor: pointer; transition: background-color 140ms ease-out, border-color 140ms ease-out; }
+.settingsToggle::after { content: ""; position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%; background: var(--surface); box-shadow: 0 1px 2px color-mix(in oklab, var(--color-neutral) 18%, transparent); transition: transform 140ms ease-out; }
+.settingsToggle:checked { border-color: var(--accent); background: var(--accent); }
+.settingsToggle:checked::after { transform: translateX(16px); }
+.settingsToggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.settingsFieldDisabled { opacity: .52; }
+.settingsFieldDisabled, .settingsFieldDisabled * { cursor: not-allowed; }
 .settingsForm > .button { justify-self: end; }
-.settingsForm p { margin: 0; color: var(--text-secondary); font-size: 12px; line-height: 1.5; }
 .numberControl { display: flex; align-items: center; gap: 9px; }
 .numberControl input { width: 110px; }
 .numberControl span { color: var(--text-secondary); font-size: 13px; }
@@ -352,11 +359,11 @@
 .composeSenderField { grid-template-rows: auto 38px; }
 .composeAccountField { overflow: hidden; }
 .composeIdentityLabel { color: var(--text-secondary); font-size: 12px; font-weight: 550; }
-.composeIdentityPane input, .composeAddressRow > input, .composeLinkEditor input, .settingsValue > input { width: 100%; height: 38px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); color: var(--text); font-size: 14px; }
+.composeIdentityPane input, .composeAddressRow > input, .composeLinkEditor input, .settingsValue > input:not([type="checkbox"]) { width: 100%; height: 38px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); color: var(--text); font-size: 14px; }
 .composeSenderList { min-width: 0; min-height: 0; display: flex; flex-direction: column; gap: 2px; overflow: auto; }
 .composeSenderOption { flex: none; }
 .composeSenderOption > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; font-weight: 560; }
-.composeMessagePane { min-width: 0; min-height: 0; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; gap: 12px; padding: 14px 16px 16px; background: var(--surface); }
+.composeMessagePane { min-width: 0; min-height: 0; display: grid; grid-template-rows: auto minmax(0, 1fr); gap: 12px; padding: 14px 16px 16px; background: var(--surface); }
 .composeMessageFields { min-width: 0; display: grid; gap: 7px; }
 .composeAddressRow { min-width: 0; display: grid; grid-template-columns: 56px minmax(0, 1fr) auto; align-items: center; gap: 8px; }
 .composeAddressRow > :is(label, .composeAddressLabel) { color: var(--text-secondary); font-size: 12px; font-weight: 550; text-align: right; }
@@ -369,11 +376,12 @@
 .recipientControl:focus-within { border-color: var(--ui-focus); box-shadow: 0 0 0 3px var(--ui-focus-ring); }
 .recipientControlDragActive { border-color: var(--ui-focus); background: color-mix(in oklab, var(--ui-focus) 5%, var(--ui-control-bg)); box-shadow: inset 0 0 0 1px var(--ui-focus); }
 .recipientInput { min-width: 120px; height: 30px; flex: 1 0 160px; padding: 0 5px; border: 0; background: transparent; color: var(--text); font-size: 14px; outline: none; box-shadow: none; }
+.recipientInput:focus, .recipientInput:focus-visible { outline: none; box-shadow: none; }
 .recipientInput:disabled { opacity: .55; }
-.recipientChip { max-width: 100%; height: 30px; display: inline-flex; align-items: center; gap: 2px; padding: 0 2px 0 9px; border: 1px solid var(--ui-selected-border); border-radius: 5px; background: var(--ui-selected-bg); color: var(--ui-selected-text); font-size: 12px; cursor: grab; }
+.recipientChip { max-width: 100%; height: 28px; display: inline-flex; align-items: center; gap: 1px; padding: 0 1px 0 7px; border: 1px solid var(--ui-selected-border); border-radius: 5px; background: var(--ui-selected-bg); color: var(--ui-selected-text); font-size: 12px; cursor: grab; }
 .recipientChip:active { cursor: grabbing; }
 .recipientChip > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.recipientChip > button { width: 26px; height: 26px; display: inline-grid; place-items: center; flex: none; padding: 0; border: 0; border-radius: 4px; background: transparent; color: var(--text-tertiary); }
+.recipientChip > button { width: 24px; height: 24px; display: inline-grid; place-items: center; flex: none; padding: 0; border: 0; border-radius: 4px; background: transparent; color: var(--text-tertiary); }
 .recipientChip > button:hover:not(:disabled) { background: color-mix(in oklab, var(--color-base-content) 7%, transparent); color: var(--text); }
 .recipientChipInvalid { border-color: color-mix(in oklab, var(--danger) 36%, var(--ui-selected-border)); background: color-mix(in oklab, var(--danger) 9%, var(--surface)); color: var(--danger); }
 .recipientChipInvalid > button { color: var(--danger); }
@@ -381,22 +389,42 @@
 .composeAddressActions button { min-height: 32px; padding: 0 7px; border: 0; border-radius: 5px; background: transparent; color: var(--text-tertiary); font-size: 12px; }
 .composeAddressActions button:hover, .composeAddressActions button[aria-pressed="true"] { background: var(--ui-selected-bg); color: var(--ui-selected-text); }
 .composeEditor { min-width: 0; min-height: 0; display: flex; flex-direction: column; overflow: hidden; border: 1px solid var(--border); border-radius: 7px; background: var(--surface); }
-.composeToolbar { min-height: 44px; display: flex; align-items: center; gap: 2px; padding: 4px 6px; border-bottom: 1px solid var(--border-soft); background: var(--surface-raised); }
+.composeToolbar { min-height: 44px; display: flex; align-items: center; gap: 2px; padding: 4px 6px; overflow-x: auto; border-bottom: 1px solid var(--border-soft); background: var(--surface-raised); }
 .composeToolbar .iconButton { width: 34px; height: 34px; border-radius: 5px; }
+.composeBlockSelect { width: 82px; height: 34px; flex: none; padding: 0 24px 0 8px; border: 1px solid transparent; border-radius: 5px; background: transparent; color: var(--text-secondary); font-size: 12px; }
+.composeBlockSelect:hover:not(:disabled) { background: color-mix(in oklab, var(--color-base-content) 6%, transparent); color: var(--text); }
+.composeBlockSelect:focus-visible { border-color: var(--ui-focus); box-shadow: 0 0 0 2px var(--ui-focus-ring); outline: none; }
+.composeToolbarDivider { width: 1px; height: 22px; flex: none; margin: 0 3px; background: var(--border-soft); }
+.composeTableTools { display: inline-flex; align-items: center; gap: 2px; flex: none; }
 .composeToolbarSpacer { min-width: 8px; flex: 1; }
 .composeFormatActive { background: var(--ui-selected-bg) !important; color: var(--ui-selected-text); box-shadow: inset 0 0 0 1px var(--ui-selected-border); }
 .composeLinkEditor { min-height: 48px; display: grid; grid-template-columns: minmax(0, 1fr) 36px 36px; align-items: center; gap: 6px; padding: 5px 7px; border-bottom: 1px solid var(--border-soft); }
 .composeEditorBody { min-height: 0; flex: 1; overflow: auto; }
-.composeEditorContent { min-height: 100%; padding: 14px 16px 24px; color: var(--text); font-size: 14px; line-height: 1.65; overflow-wrap: anywhere; outline: none; }
+.composeEditorContent { position: relative; min-height: 100%; padding: 14px 16px 24px 40px; color: var(--text); font-size: 14px; line-height: 1.65; overflow-wrap: anywhere; outline: none; counter-reset: editor-line; }
+.composeEditorContent::before { content: ""; position: absolute; top: 0; bottom: 0; left: 32px; width: 1px; background: var(--border-soft); pointer-events: none; }
+.composeEditorContent > :is(p, h1, h2, h3, blockquote, ul, ol) { position: relative; counter-increment: editor-line; }
+.composeEditorContent > :is(p, h1, h2, h3, blockquote, ul, ol)::before { content: counter(editor-line); position: absolute; top: 0; right: calc(100% + 13px); width: 18px; color: var(--text-tertiary); font-size: 11px; font-variant-numeric: tabular-nums; font-weight: 400; line-height: 1.9; text-align: right; user-select: none; pointer-events: none; }
 .composeEditorContent p { margin: 0 0 10px; }
+.composeEditorContent h1, .composeEditorContent h2, .composeEditorContent h3 { margin: 16px 0 8px; line-height: 1.35; }
+.composeEditorContent h1 { font-size: 20px; }
+.composeEditorContent h2 { font-size: 16px; }
+.composeEditorContent h3 { font-size: 14px; }
 .composeEditorContent :is(ul, ol) { margin: 0 0 10px; padding-left: 24px; }
 .composeEditorContent a { color: var(--signal); text-decoration: underline; }
+.composeEditorContent blockquote { margin: 10px 0; padding: 2px 0 2px 12px; border-left: 3px solid var(--border); color: var(--text-secondary); }
+.composeEditorContent hr { margin: 16px 0; border: 0; border-top: 1px solid var(--border); }
+.composeEditorContent table { width: 100%; margin: 12px 0; border-collapse: collapse; table-layout: fixed; }
+.composeEditorContent :is(th, td) { min-width: 48px; padding: 6px 8px; border: 1px solid var(--border); vertical-align: top; }
+.composeEditorContent th { background: var(--surface-raised); font-weight: 620; text-align: left; }
+.composeEditorContent :is(th, td) > p { margin: 0; }
+.composeEditorContent .selectedCell { background: color-mix(in oklab, var(--accent) 8%, var(--surface)); }
 .composeAttachments { min-width: 0; display: flex; align-items: center; gap: 5px; color: var(--text-secondary); font-size: 12px; }
-.composeAttachmentList { max-height: 132px; display: grid; gap: 4px; margin: 0; padding: 6px; overflow: auto; border-top: 1px solid var(--border-soft); list-style: none; }
-.composeAttachmentList li { min-height: 40px; display: grid; grid-template-columns: minmax(0, 1fr) 36px; align-items: center; gap: 8px; padding: 2px 4px 2px 10px; border: 1px solid var(--border-soft); border-radius: 6px; background: var(--surface-raised); }
-.composeAttachmentList li > span { min-width: 0; display: flex; align-items: baseline; gap: 8px; }
-.composeAttachmentList strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; font-weight: 560; }
+.composeAttachmentList { max-height: 104px; display: flex; flex-wrap: wrap; align-content: flex-start; gap: 4px; margin: 0; padding: 6px 7px; overflow: auto; border-top: 1px solid var(--border-soft); list-style: none; }
+.composeAttachmentList li { min-width: 0; max-width: 100%; min-height: 30px; display: inline-flex; align-items: center; gap: 4px; flex: 0 1 auto; padding: 1px 1px 1px 8px; border: 1px solid var(--ui-selected-border); border-radius: 5px; background: var(--ui-selected-bg); color: var(--ui-selected-text); }
+.composeAttachmentList li > span { min-width: 0; display: flex; align-items: baseline; gap: 6px; }
+.composeAttachmentList strong { min-width: 0; overflow-wrap: anywhere; white-space: normal; font-size: 12px; font-weight: 560; }
 .composeAttachmentList small { flex: none; color: var(--text-tertiary); font-size: 11px; }
+.composeAttachmentList .iconButton { width: 26px; height: 26px; border-radius: 4px; }
 .composeEditorFooter { min-height: 42px; display: flex; align-items: center; padding: 3px 7px; border-top: 1px solid var(--border-soft); background: var(--surface); }
 .composeMessagePane > .formError { margin: 0; }
 
@@ -502,7 +530,10 @@
   .composeToolbar { overflow-x: auto; }
   .composeToolbar .iconButton { width: 44px; height: 44px; }
   .composeToolbarSpacer { flex: 0 0 4px; }
-  .composeEditorContent { min-height: 280px; padding: 13px 14px 22px; }
+  .composeEditorContent { min-height: 280px; padding: 13px 14px 22px 38px; }
+  .composeEditorContent::before { left: 30px; }
+  .composeAttachmentList li { min-height: 44px; padding-left: 10px; }
+  .composeAttachmentList .iconButton { width: 40px; height: 40px; }
   .composeAttachments > .iconButton { width: 44px; height: 44px; }
   .settingsForm .button { align-self: flex-end; }
   .dialog { padding: 18px; }
@@ -516,6 +547,7 @@
 
 @media (prefers-reduced-motion: reduce) {
   .syncRail::after, .rotating, .spinner { animation: none; }
+  .settingsToggle, .settingsToggle::after { transition: none; }
   .syncRail::after { transform: none; opacity: 1; }
   .spinner { border-top-color: transparent; border-right-color: currentColor; }
 }

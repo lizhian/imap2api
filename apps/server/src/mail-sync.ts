@@ -2,7 +2,7 @@ import { ImapFlow } from "imapflow";
 import { simpleParser } from "mailparser";
 import { createHash } from "node:crypto";
 import sanitizeHtml from "sanitize-html";
-import type { Address, FolderKind } from "@imap2api/shared";
+import type { Address, FolderKind } from "@email2api/shared";
 import { AppDatabase, type StoredAccount, type StoredAttachment, type StoredMessageContent } from "./database.js";
 import { EventBroker } from "./events.js";
 import { classifyMail, FORWARDING_HEADER_FIELDS, MAIL_CLASSIFICATION_VERSION, resolveForwardedVia } from "./mail-classifier.js";
